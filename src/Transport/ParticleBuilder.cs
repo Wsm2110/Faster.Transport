@@ -1,10 +1,5 @@
 ﻿using Faster.Transport.Contracts;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Net;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Faster.Transport;
 
@@ -92,23 +87,22 @@ public sealed class ParticleBuilder
     }
 
     /// <summary>
-    /// Attaches a disconnect callback for async clients (<see cref="IParticle"/>).
+    /// Attaches a disconnect callback for async particles (<see cref="IParticle"/>).
     /// </summary>
-    public ParticleBuilder OnDisconnected(Action<IParticle, Exception?> handler)
+    public ParticleBuilder OnParticleDisconnected(Action<IParticle, Exception?> handler)
     {
         _onDisconnectedClient = handler ?? throw new ArgumentNullException(nameof(handler));
         return this;
     }
 
     /// <summary>
-    /// Attaches a disconnect callback for burst clients (<see cref="IParticleBurst"/>).
+    /// Attaches a disconnect callback for burst-mode particles (<see cref="IParticleBurst"/>).
     /// </summary>
-    public ParticleBuilder OnDisconnected(Action<IParticleBurst, Exception?> handler)
+    public ParticleBuilder OnBurstDisconnected(Action<IParticleBurst, Exception?> handler)
     {
         _onDisconnectedBurst = handler ?? throw new ArgumentNullException(nameof(handler));
         return this;
     }
-
     #endregion
 
     #region Build

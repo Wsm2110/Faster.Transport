@@ -10,7 +10,7 @@
     <PackageReference Include="Microsoft.VisualStudio.DiagnosticsHub.BenchmarkDotNetDiagnosers" Version="18.0.36421.1" />
   </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\Faster.Transport\Faster.Transport.csproj" />
+  <ItemGroup>   
+    <ProjectReference Include="..\src\Transport\Faster.Transport.csproj" />
   </ItemGroup>
 </Project>

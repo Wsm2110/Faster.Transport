@@ -264,7 +264,7 @@ public sealed class Particle : IParticle
         try { _socket?.Dispose(); } catch { }
         try { _recvArgs.Dispose(); } catch { }
 
-        try { Disconnected?.Invoke(ex); } catch { }
+        try { Disconnected?.Invoke(this, ex); } catch { }
         try { OnDisconnected?.Invoke(this); } catch { }
     }
 

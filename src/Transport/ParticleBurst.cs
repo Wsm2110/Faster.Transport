@@ -40,7 +40,7 @@ public sealed class ParticleBurst : IParticleBurst
     /// <summary>
     /// Triggered when the socket disconnects or an error occurs.
     /// </summary>
-    public Action<ParticleBurst, Exception?>? Disconnected { get; set; }
+    public Action<IParticleBurst, Exception?>? Disconnected { get; set; }
 
     /// <summary>
     /// Creates a new <see cref="FasterClient"/> and connects synchronously to the specified endpoint.

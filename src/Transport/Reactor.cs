@@ -40,6 +40,8 @@ public sealed class Reactor : IDisposable
     /// </summary>
     public Action<Connection, ReadOnlyMemory<byte>>? OnReceived { get; set; }
 
+    public Action<Connection>? OnConnected { get; set; }
+
     /// <summary>
     /// Initializes a new instance of the <see cref="Reactor"/> class and binds it to the specified endpoint.
     /// </summary>
@@ -54,6 +56,23 @@ public sealed class Reactor : IDisposable
         };
 
         _listener.Bind(bindEndPoint);
+        _listener.Listen(backlog);
+        _bufferSize = bufferSize;
+        _maxDegreeParralelism = maxDegreeParralelism;
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="Reactor"/> class and binds it to the specified endpoint.
+    /// </summary>
+    /// <param name="bindEndPoint">The network endpoint to bind to.</param>
+    /// <param name="backlog">The maximum number of pending connections (default = 1024).</param>
+    /// <param name="maxDegreeParralelism">Optional parameter for future connection scaling logic.</param>
+    public Reactor(Socket socket, int backlog = 1024, int bufferSize = 8192, int maxDegreeParralelism = 8)
+    {
+        _listener = socket ?? throw new ArgumentNullException(nameof(socket));
+
+        _listener.Bind(socket.LocalEndPoint!);
+
         _listener.Listen(backlog);
         _bufferSize = bufferSize;
         _maxDegreeParralelism = maxDegreeParralelism;
@@ -156,6 +175,9 @@ public sealed class Reactor : IDisposable
 
         // Add client to active connection dictionary
         _clients[clientId] = connection;
+
+        // Notify subscribers of client
+        OnConnected?.Invoke(connection);
 
         // Continue accepting more clients
         AcceptNext(e);
