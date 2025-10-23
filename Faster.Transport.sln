@@ -11,7 +11,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmark", "benchmark", "{
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{F06F8673-E718-44F9-9C8C-EF87520A5FD2}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CommandBenchmark", "benchmark\CommandBenchmark.csproj", "{F6A07BE4-E4E3-E00F-11E3-432B36E565C9}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TransportBenchmark", "benchmark\TransportBenchmark.csproj", "{F6A07BE4-E4E3-E00F-11E3-432B36E565C9}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UnitTests", "tests\UnitTests.csproj", "{A13B8C93-64EA-04E6-A21E-20323ED872E0}"
 EndProject
