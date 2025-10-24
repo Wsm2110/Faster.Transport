@@ -5,7 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 
-namespace Faster.Transport;
+namespace Faster.Transport.Features.Tcp;
 
 using System.Collections.Concurrent;
 using System.Net;
@@ -307,7 +307,7 @@ public sealed class Connection : IDisposable
     /// <param name="payload">The message to send.</param>
     /// <returns>True if successfully queued for sending, false otherwise.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool Return(ReadOnlyMemory<byte> payload)
+    public bool Return(ReadOnlySpan<byte> payload)
     {
         if (_isDisposed || payload.IsEmpty)
             return false;
@@ -333,7 +333,7 @@ public sealed class Connection : IDisposable
         BinaryPrimitives.WriteInt32LittleEndian(buffer.Span.Slice(0, 4), length);
 
         // Copy payload
-        payload.Span.CopyTo(buffer.Span.Slice(4));
+        payload.CopyTo(buffer.Span.Slice(4));
 
         // Set buffer and send
         sendArgs.SetBuffer(buffer);

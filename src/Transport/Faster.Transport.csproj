@@ -6,9 +6,19 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- NuGet packaging metadata -->
+    <Description>
+      High-performance, zero-allocation transport framework for real-time .NET applications.
+      Includes Reactor (async TCP server) and Particle clients (Particle, ParticleFlux, ParticleBurst)
+      for scalable, ultra-low-latency message exchange. Ideal for trading systems, telemetry,
+      simulation, and distributed pipelines.
+    </Description>
+    <PackageTags>
+      networking;transport;tcp;async;high-performance;low-latency;reactor;client;server;messaging;dotnet;csharp;event-driven;zerocopy;real-time;events;commands;
+    </PackageTags>   
+    <Company>Faster Framework</Company>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>Faster.Transport</PackageId>
-    <Version>0.0.2</Version>
+    <Version>0.0.7</Version>
     <Authors>Wiljan Ruizendaal</Authors>
     <RepositoryUrl>https://github.com/Wsm2110/Faster.Transport</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Wsm2110/Faster.Transport</PackageProjectUrl>

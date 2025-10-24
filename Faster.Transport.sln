@@ -9,17 +9,21 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Samples", "Samples", "{02EA
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmark", "benchmark", "{64F69214-5F63-4A3D-8619-30BF8651DC5E}"
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{F06F8673-E718-44F9-9C8C-EF87520A5FD2}"
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "test", "test", "{F06F8673-E718-44F9-9C8C-EF87520A5FD2}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TransportBenchmark", "benchmark\TransportBenchmark.csproj", "{F6A07BE4-E4E3-E00F-11E3-432B36E565C9}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UnitTests", "tests\UnitTests.csproj", "{A13B8C93-64EA-04E6-A21E-20323ED872E0}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.Benchmark", "benchmark\Faster.Transport.Benchmark.csproj", "{F6A07BE4-E4E3-E00F-11E3-432B36E565C9}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{2B7A68E4-EA79-4045-BB9C-E5179EB60182}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.Samples", "samples\Faster.Transport.Samples\Faster.Transport.Samples.csproj", "{8BA4E35E-F560-87ED-6A77-3CAA79D3ED12}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.Tcp.Sample", "samples\Faster.Transport.Samples\Faster.Transport.Tcp.Sample.csproj", "{8BA4E35E-F560-87ED-6A77-3CAA79D3ED12}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport", "src\Transport\Faster.Transport.csproj", "{162B2FFD-5D8A-EF18-DFD1-FB0AF2601C6D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.InProc.Sample", "samples\Faster.Transport.InProc.Sample\Faster.Transport.InProc.Sample.csproj", "{5C4A5580-8F1E-4835-A9F1-91852A520575}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.Unittests", "Faster.Transport.Unittests\Faster.Transport.Unittests.csproj", "{D544F8A4-F1A0-4F09-A9AD-35294FF38049}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.Ipc.Sample", "samples\Faster.Transport.Ipc.Sample\Faster.Transport.Ipc.Sample.csproj", "{698B504E-E62C-B446-90CA-D30610F0B580}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -31,10 +35,6 @@ Global
 		{F6A07BE4-E4E3-E00F-11E3-432B36E565C9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F6A07BE4-E4E3-E00F-11E3-432B36E565C9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{F6A07BE4-E4E3-E00F-11E3-432B36E565C9}.Release|Any CPU.Build.0 = Release|Any CPU
-		{A13B8C93-64EA-04E6-A21E-20323ED872E0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{A13B8C93-64EA-04E6-A21E-20323ED872E0}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{A13B8C93-64EA-04E6-A21E-20323ED872E0}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{A13B8C93-64EA-04E6-A21E-20323ED872E0}.Release|Any CPU.Build.0 = Release|Any CPU
 		{8BA4E35E-F560-87ED-6A77-3CAA79D3ED12}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{8BA4E35E-F560-87ED-6A77-3CAA79D3ED12}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8BA4E35E-F560-87ED-6A77-3CAA79D3ED12}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -43,15 +43,29 @@ Global
 		{162B2FFD-5D8A-EF18-DFD1-FB0AF2601C6D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{162B2FFD-5D8A-EF18-DFD1-FB0AF2601C6D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{162B2FFD-5D8A-EF18-DFD1-FB0AF2601C6D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5C4A5580-8F1E-4835-A9F1-91852A520575}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5C4A5580-8F1E-4835-A9F1-91852A520575}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5C4A5580-8F1E-4835-A9F1-91852A520575}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5C4A5580-8F1E-4835-A9F1-91852A520575}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D544F8A4-F1A0-4F09-A9AD-35294FF38049}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D544F8A4-F1A0-4F09-A9AD-35294FF38049}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D544F8A4-F1A0-4F09-A9AD-35294FF38049}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D544F8A4-F1A0-4F09-A9AD-35294FF38049}.Release|Any CPU.Build.0 = Release|Any CPU
+		{698B504E-E62C-B446-90CA-D30610F0B580}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{698B504E-E62C-B446-90CA-D30610F0B580}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{698B504E-E62C-B446-90CA-D30610F0B580}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{698B504E-E62C-B446-90CA-D30610F0B580}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{F6A07BE4-E4E3-E00F-11E3-432B36E565C9} = {64F69214-5F63-4A3D-8619-30BF8651DC5E}
-		{A13B8C93-64EA-04E6-A21E-20323ED872E0} = {F06F8673-E718-44F9-9C8C-EF87520A5FD2}
 		{8BA4E35E-F560-87ED-6A77-3CAA79D3ED12} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 		{162B2FFD-5D8A-EF18-DFD1-FB0AF2601C6D} = {2B7A68E4-EA79-4045-BB9C-E5179EB60182}
+		{5C4A5580-8F1E-4835-A9F1-91852A520575} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{D544F8A4-F1A0-4F09-A9AD-35294FF38049} = {F06F8673-E718-44F9-9C8C-EF87520A5FD2}
+		{698B504E-E62C-B446-90CA-D30610F0B580} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {E68002CE-095D-44D3-8033-99EEFC48774D}
