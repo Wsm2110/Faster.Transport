@@ -1,188 +1,228 @@
-# ⚡ Faster.Transport  
-**Ultra-low-latency, high-throughput transport layer for real-time distributed systems**
+# 🚀 Faster.Transport
 
-Faster.Transport is a modern, zero-allocation, high-performance networking library designed for **real-time data transport**.  
-It provides an event-driven **TCP Reactor** (server) and multiple specialized **Particles** (clients) for different concurrency and throughput models — optimized for **trading engines**, **telemetry**, **simulation**, and **multiplayer networking**.
+> **Unified High-Performance Transport Layer for .NET**
 
----
+`Faster.Transport` provides a **single abstraction (`IParticle`)** for multiple communication backends:
+- 🧠 **Inproc** – ultra-fast in-memory messaging inside one process  
+- 🧩 **IPC** – shared-memory interprocess communication  
+- ⚡ **TCP** – reliable framed network transport  
+- 📡 **UDP** – multicast, broadcast, and low-latency datagrams  
 
-## 🚀 Core Components
-
-| Component | Description | Protocol | Ideal Use Case |
-|------------|-------------|-----------|----------------|
-| 🧠 **Reactor** | High-performance async TCP server using `SocketAsyncEventArgs` and zero-copy I/O. Manages multiple clients efficiently. | TCP | Low-latency message hubs, servers, brokers |
-| ⚙️ **Particle** | Single-threaded async client with `await`-based send/receive. | TCP | Reliable request/response, command streaming |
-| 🌐 **ParticleFlux** | Multi-threaded concurrent client (safe for many producers). Uses lock-free buffer pools. | TCP | Parallel telemetry uploads, multi-threaded simulations |
-| ⚡ **ParticleBurst** | Fire-and-forget ultra-fast client. Trades reliability for raw throughput. | TCP | Tick feeds, sensor data, broadcast updates |
+Each transport implements **full-duplex communication**, unified **async APIs**, and supports **zero-copy buffer reuse** for extreme speed.
 
 ---
 
-## 🧩 Architecture Overview
+## 🧱 Architecture Overview
 
-```
- ┌────────────────────────────┐
- │        Reactor (Server)    │
- │  ────────────────────────  │
- │  Accepts clients as        │
- │  Connection objects         │
- │  Handles framed messages    │
- └─────────────┬──────────────┘
-               │
-      ┌────────┴────────┐
-      │                 │
-┌────────────┐   ┌────────────┐
-│  Particle   │   │ ParticleFlux │
-│ (Async)     │   │ (Concurrent) │
-└────────────┘   └────────────┘
-       │                 │
-       └─────────┬───────┘
-                 │
-          ┌────────────┐
-          │ ParticleBurst │
-          │ (Fire & Forget) │
-          └────────────┘
-```
-
-Each **Particle** connects to a **Reactor** and communicates using a lightweight **framed protocol**:
-
-```
-[length:int32][payload:byte[]]
-```
-
-This enables efficient, zero-copy parsing of variable-length messages.
+| Transport | Description | Best For | Backing Technology |
+|------------|-------------|----------|--------------------|
+| 🧠 **Inproc** | Runs entirely in memory within one process | Same-process subsystems | Lock-free ring buffer |
+| 🧩 **IPC** | High-speed shared-memory communication between processes | Cross-process communication | Memory-mapped files + SPSC rings |
+| ⚡ **TCP** | Reliable, ordered, framed byte stream | External connections | Sockets with length-prefixed framing |
+| 📡 **UDP** | Lightweight datagram messaging with multicast/broadcast support | Real-time telemetry | Datagram sockets with optional multicast groups |
 
 ---
 
-## 🧠 What Are Particles?
+## 🧰 Core Concepts
 
-Particles are **clients that connect to a Reactor**.  
-Each type offers a specific balance between **throughput**, **latency**, and **concurrency safety**.
+### 🧩 `IParticle`
 
-| Particle Type | Description | Thread Safety | Reliability | Throughput | Typical Use |
-|----------------|--------------|----------------|---------------|--------------|---------------|
-| **Particle** | Async client (single-threaded) using `ValueTask SendAsync`. | 🚫 No | ✅ Reliable | ⚙️ Moderate | RPCs, control messages |
-| **ParticleFlux** | Concurrent async client (multi-threaded safe). | ✅ Yes | ✅ Reliable | 🚀 High | Parallel telemetry streams |
-| **ParticleBurst** | Fire-and-forget, lock-free burst sender. | ✅ Yes | ⚠️ Unreliable (no await) | ⚡ Extreme | Market data, tick streams, sensor bursts |
-
----
-
-## 🧩 Example — Reactor + Particle
-
-### Reactor (Server)
+Every transport implements the same core interface:
 
 ```csharp
-using Faster.Transport;
-using System.Net;
-
-var reactor = new Reactor(new IPEndPoint(IPAddress.Any, 5555));
-reactor.OnReceived = (conn, data) =>
+public interface IParticle : IDisposable
 {
-    // Echo message back
-    conn.Return(data);
-};
+    Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
+    Action<IParticle>? OnDisconnected { get; set; }
+    Action<IParticle>? OnConnected { get; set; }
 
-reactor.OnConnected = conn => Console.WriteLine("New client connected!");
-reactor.Start();
-
-Console.WriteLine("Reactor started on port 5555.");
-Console.ReadLine();
-```
-
-### Particle (Async Client)
-
-```csharp
-using Faster.Transport;
-using System.Net;
-using System.Text;
-
-var particle = new ParticleBuilder()
-    .ConnectTo(new IPEndPoint(IPAddress.Loopback, 5555))
-    .OnReceived(data => Console.WriteLine("Echo: " + Encoding.UTF8.GetString(data.Span)))
-    .OnParticleDisconnected((cli, ex) => Console.WriteLine("Disconnected: " + ex?.Message))
-    .Build();
-
-await particle.SendAsync(Encoding.UTF8.GetBytes("Hello Reactor!"));
-```
-
----
-
-## ⚡ Example — ParticleBurst (Fire-and-Forget)
-
-```csharp
-using Faster.Transport;
-using System.Net;
-using System.Text;
-
-var burst = new ParticleBuilder()
-    .ConnectTo(new IPEndPoint(IPAddress.Loopback, 5555))
-    .AsBurst()
-    .WithParallelism(32)
-    .OnBurstDisconnected((cli, ex) => Console.WriteLine("Burst disconnected: " + ex?.Message))
-    .BuildBurst();
-
-var payload = Encoding.UTF8.GetBytes("Hello Reactor ⚡");
-
-// Send 100k messages as fast as possible
-for (int i = 0; i < 100_000; i++)
-{
-    burst.Send(payload);
+    ValueTask SendAsync(ReadOnlyMemory<byte> payload);
+    void Send(ReadOnlySpan<byte> payload);
 }
 ```
 
----
-
-## 🧰 Features
-
-✅ Zero-copy, framed protocol  
-✅ Lock-free buffer management (`ConcurrentBufferManager`)  
-✅ Pooled `SocketAsyncEventArgs` for zero allocation  
-✅ High-performance frame parser with inline feed  
-✅ Full duplex I/O  
-✅ Supports hundreds of concurrent connections  
-✅ Works with .NET Framework 4.8 and .NET 6+  
+This ensures that any `IParticle` instance — TCP, UDP, IPC, or Inproc — can be used interchangeably in your systems.
 
 ---
 
-## ⚙️ Configuration via `ParticleBuilder`
+## 🧪 Building a Transport Instance
+
+All transports are created via the unified **`ParticleBuilder`**.
+
+```csharp
+var particle = new ParticleBuilder()
+    .UseMode(TransportMode.Tcp)
+    .ConnectTo(new IPEndPoint(IPAddress.Loopback, 9000))
+    .OnConnected(p => Console.WriteLine("Connected!"))
+    .OnReceived((p, data) => Console.WriteLine($"Received {data.Length} bytes"))
+    .Build();
+```
+
+### Supported Modes
+
+| Enum | Transport | Description |
+|------|------------|-------------|
+| `TransportMode.Inproc` | In-process zero-copy | Super low latency internal messaging |
+| `TransportMode.Ipc` | Shared-memory cross-process | 10x faster than named pipes |
+| `TransportMode.Tcp` | Framed, reliable socket transport | Traditional client/server |
+| `TransportMode.Udp` | Datagram transport (unicast/multicast/broadcast) | Real-time telemetry |
+
+---
+
+## ⚡ TCP Example
+
+```csharp
+var client = new ParticleBuilder()
+    .UseMode(TransportMode.Tcp)
+    .ConnectTo(new IPEndPoint(IPAddress.Loopback, 9500))
+    .OnConnected(p => Console.WriteLine("TCP connected"))
+    .OnReceived((p, msg) =>
+    {
+        Console.WriteLine($"📩 TCP received: {Encoding.UTF8.GetString(msg.Span)}");
+    })
+    .Build();
+
+await client.SendAsync(Encoding.UTF8.GetBytes("Hello TCP!"));
+```
+
+---
+
+## 📡 UDP Example (Full Duplex)
+
+Full-duplex UDP socket for **send + receive** on one port.
+
+```csharp
+var port = 9700;
+var local = new IPEndPoint(IPAddress.Any, port);
+var remote = new IPEndPoint(IPAddress.Loopback, port);
+
+var udp = new ParticleBuilder()
+    .UseMode(TransportMode.Udp)
+    .BindTo(local)
+    .ConnectTo(remote)
+    .OnConnected(p => Console.WriteLine("UDP ready"))
+    .OnReceived((p, msg) =>
+    {
+        Console.WriteLine($"📨 {Encoding.UTF8.GetString(msg.Span)}");
+    })
+    .Build();
+
+await udp.SendAsync(Encoding.UTF8.GetBytes("Ping via UDP!"));
+```
+
+---
+
+## 🌍 UDP Multicast Example
+
+Broadcast messages to all peers in a multicast group.
+
+```csharp
+var group = IPAddress.Parse("239.0.0.123");
+var port = 9700;
+var local = new IPEndPoint(IPAddress.Any, 0);
+var multicast = new IPEndPoint(group, port);
+
+var peer = new ParticleBuilder()
+    .UseMode(TransportMode.Udp)
+    .BindTo(local)
+    .ConnectTo(multicast)
+    .JoinMulticastGroup(group, disableLoopback: false)
+    .OnConnected(p => Console.WriteLine("✅ Joined multicast group"))
+    .OnReceived((p, msg) =>
+    {
+        Console.WriteLine($"📩 {Encoding.UTF8.GetString(msg.Span)}");
+    })
+    .Build();
+
+await peer.SendAsync(Encoding.UTF8.GetBytes("Hello multicast group!"));
+```
+
+🧠 **Tip:**  
+Set `disableLoopback: true` if you don’t want to receive your own packets.
+
+---
+
+## 🧠 Inproc Example
+
+Ultra-fast messaging inside a single process (no kernel calls):
+
+```csharp
+// Create server side
+var server = new ParticleBuilder()
+    .UseMode(TransportMode.Inproc)
+    .WithChannel("demo", isServer: true)
+    .OnReceived((p, msg) =>
+    {
+        Console.WriteLine($"[Server] Got: {Encoding.UTF8.GetString(msg.Span)}");
+        p.Send("Echo"u8.ToArray());
+    })
+    .Build();
+
+// Create client side
+var client = new ParticleBuilder()
+    .UseMode(TransportMode.Inproc)
+    .WithChannel("demo")
+    .OnReceived((p, msg) =>
+    {
+        Console.WriteLine($"[Client] Got reply: {Encoding.UTF8.GetString(msg.Span)}");
+    })
+    .Build();
+
+await client.SendAsync("Ping"u8.ToArray());
+```
+
+---
+
+## 🧩 IPC Example (Cross-Process)
+
+Uses **memory-mapped files** and ring buffers to exchange messages across processes.
+
+```csharp
+// Server
+var server = new ParticleBuilder()
+    .UseMode(TransportMode.Ipc)
+    .WithChannel("shared-mem", isServer: true)
+    .OnReceived((p, msg) =>
+    {
+        Console.WriteLine($"[Server] {Encoding.UTF8.GetString(msg.Span)}");
+        p.Send("Ack"u8.ToArray());
+    })
+    .Build();
+
+// Client
+var client = new ParticleBuilder()
+    .UseMode(TransportMode.Ipc)
+    .WithChannel("shared-mem")
+    .OnReceived((p, msg) =>
+    {
+        Console.WriteLine($"[Client] Got: {Encoding.UTF8.GetString(msg.Span)}");
+    })
+    .Build();
+
+await client.SendAsync("Hi IPC!"u8.ToArray());
+```
+
+---
+
+## ⚙️ Common Builder Options
 
 | Method | Description |
 |--------|--------------|
-| `.ConnectTo(EndPoint)` | Sets the remote endpoint |
-| `.WithBufferSize(int)` | Controls per-message buffer slice |
-| `.WithParallelism(int)` | Controls internal pool scaling |
-| `.AsConcurrent()` | Enables thread-safe concurrent sends |
-| `.AsBurst()` | Enables fire-and-forget mode |
-| `.OnReceived(Action<ReadOnlyMemory<byte>>)` | Handles received frames |
-| `.OnParticleDisconnected(...)` | Handles disconnect for async particles |
-| `.OnBurstDisconnected(...)` | Handles disconnect for burst particles |
+| `.UseMode(TransportMode)` | Selects backend |
+| `.BindTo(EndPoint)` | Sets local endpoint (UDP/TCP) |
+| `.ConnectTo(EndPoint)` | Sets remote target |
+| `.JoinMulticastGroup(IPAddress, disableLoopback)` | Enables multicast for UDP |
+| `.WithChannel(string, bool)` | Sets shared channel for IPC/Inproc |
+| `.AllowBroadcast(bool)` | Enables UDP broadcast |
+| `.WithBufferSize(int)` | Adjusts internal buffer size |
+| `.WithParallelism(int)` | Controls async send parallelism |
+| `.OnReceived(Action<IParticle, ReadOnlyMemory<byte>>)` | Handles received messages |
+| `.OnConnected(Action<IParticle>)` | Called when ready |
+| `.OnDisconnected(Action<IParticle, Exception?>)` | Handles disconnects |
 
 ---
 
-## 📦 Example Project Scenarios
+## 🧾 License
 
-| Scenario | Recommended |
-|-----------|--------------|
-| Command/Control API | 🧩 `Particle` |
-| Multi-threaded telemetry upload | 🌐 `ParticleFlux` |
-| Firehose of tick or sensor data | ⚡ `ParticleBurst` |
-| Server or message router | 🧠 `Reactor` |
-
----
-
-## 🧪 Performance Targets (on modern hardware)
-
-| Metric | ParticleFlux | ParticleBurst |
-|---------|---------------|----------------|
-| Throughput | ~3–5 million msgs/sec | ~10+ million msgs/sec |
-| Latency | ~40 µs (99%) | ~25 µs (99%) |
-| Allocations | Zero | Zero |
-
-*(Tested with 8192-byte payloads on loopback with 32 parallel senders.)*
-
----
-
-## 🧩 License
-
-MIT © Faster.Transport  
-Engineered for **speed**, **stability**, and **real-time data flow**.
-
+MIT © 2025 — Faster.Transport Team  
+Designed for high-performance real-time systems, simulation, and distributed computation.
