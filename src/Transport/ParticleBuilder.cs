@@ -1,5 +1,6 @@
 ﻿using Faster.Transport.Contracts;
 using Faster.Transport.Features.Tcp;
+using Faster.Transport.Features.Udp;
 using Faster.Transport.Inproc;
 using Faster.Transport.Ipc;
 using System;
@@ -8,54 +9,57 @@ using System.Net;
 namespace Faster.Transport
 {
     /// <summary>
-    /// Fluent builder for creating <see cref="IParticle"/> transport clients or servers.
-    /// 
-    /// ✅ Supports multiple transport backends:
-    /// - <see cref="TransportMode.Inproc"/> (in-process, zero-copy)
-    /// - <see cref="TransportMode.Ipc"/> (shared-memory cross-process)
-    /// - <see cref="TransportMode.Tcp"/> (network transport)
-    /// 
-    /// Each transport implements <see cref="IParticle"/>, providing a unified API for sending,
-    /// receiving, connection events, and graceful shutdown.
+    /// Fluent builder for creating <see cref="IParticle"/> instances using multiple transport backends:
+    /// - <see cref="TransportMode.Inproc"/> for in-process ultra-fast communication
+    /// - <see cref="TransportMode.Ipc"/> for shared-memory cross-process
+    /// - <see cref="TransportMode.Tcp"/> for network-based reliable communication
+    /// - <see cref="TransportMode.Udp"/> for lightweight datagram-based communication
     /// </summary>
     public sealed class ParticleBuilder
     {
         private TransportMode _mode = TransportMode.Tcp;
-        private EndPoint? _remoteEndPoint;
-        private string? _channelName;
-        private bool _isServer;
+
+        // Common options
         private int _bufferSize = 8192;
         private int _parallelism = 8;
-        private int _ringCapacity = 1 << 20; // 1 MiB for IPC/Inproc
+        private int _ringCapacity = 1 << 20;
 
+        // Connection details
+        private EndPoint? _remoteEndPoint;
+        private EndPoint? _localEndPoint;
+        private IPAddress? _multicastGroup;
+
+        private bool _isServer;
+        private bool _allowBroadcast;
+        private bool _disableLoopback = true;
+
+        // Event handlers
         private Action<IParticle, ReadOnlyMemory<byte>>? _onReceived;
-        private Action<IParticle, Exception?>? _onDisconnected;
         private Action<IParticle>? _onConnected;
+        private Action<IParticle, Exception?>? _onDisconnected;
+
+        private string? _channelName;
 
         #region Fluent Configuration
 
-        /// <summary>
-        /// Selects the desired transport backend.
-        /// </summary>
         public ParticleBuilder UseMode(TransportMode mode)
         {
             _mode = mode;
             return this;
         }
 
-        /// <summary>
-        /// Specifies a TCP endpoint for <see cref="TransportMode.Tcp"/>.
-        /// </summary>
         public ParticleBuilder ConnectTo(EndPoint endpoint)
         {
             _remoteEndPoint = endpoint ?? throw new ArgumentNullException(nameof(endpoint));
             return this;
         }
 
-        /// <summary>
-        /// Sets the shared channel name (for IPC/Inproc).
-        /// Both peers must use the same name to connect.
-        /// </summary>
+        public ParticleBuilder BindTo(EndPoint endpoint)
+        {
+            _localEndPoint = endpoint ?? throw new ArgumentNullException(nameof(endpoint));
+            return this;
+        }
+
         public ParticleBuilder WithChannel(string name, bool isServer = false)
         {
             if (string.IsNullOrWhiteSpace(name))
@@ -65,9 +69,6 @@ namespace Faster.Transport
             return this;
         }
 
-        /// <summary>
-        /// Configures the buffer size used for send/receive operations.
-        /// </summary>
         public ParticleBuilder WithBufferSize(int bytes)
         {
             if (bytes <= 0) throw new ArgumentOutOfRangeException(nameof(bytes));
@@ -75,9 +76,6 @@ namespace Faster.Transport
             return this;
         }
 
-        /// <summary>
-        /// Configures the internal shared-memory ring capacity for IPC/Inproc.
-        /// </summary>
         public ParticleBuilder WithRingCapacity(int capacity)
         {
             if (capacity < 1024) throw new ArgumentOutOfRangeException(nameof(capacity));
@@ -85,9 +83,6 @@ namespace Faster.Transport
             return this;
         }
 
-        /// <summary>
-        /// Sets the degree of parallelism for internal buffer management.
-        /// </summary>
         public ParticleBuilder WithParallelism(int degree)
         {
             if (degree <= 0) throw new ArgumentOutOfRangeException(nameof(degree));
@@ -95,31 +90,31 @@ namespace Faster.Transport
             return this;
         }
 
-        /// <summary>
-        /// Registers a callback invoked when a message is received.
-        /// Provides the <see cref="IParticle"/> sender, so replies can be sent directly.
-        /// </summary>
-        /// <param name="handler">
-        /// Example: <c>(p, data) =&gt; p.Send("pong"u8.ToArray());</c>
-        /// </param>
+        public ParticleBuilder AllowBroadcast(bool enable = true)
+        {
+            _allowBroadcast = enable;
+            return this;
+        }
+
+        public ParticleBuilder JoinMulticastGroup(IPAddress address, bool disableLoopback = true)
+        {
+            _multicastGroup = address ?? throw new ArgumentNullException(nameof(address));
+            _disableLoopback = disableLoopback;
+            return this;
+        }
+
         public ParticleBuilder OnReceived(Action<IParticle, ReadOnlyMemory<byte>> handler)
         {
             _onReceived = handler ?? throw new ArgumentNullException(nameof(handler));
             return this;
         }
 
-        /// <summary>
-        /// Registers a callback invoked when disconnected or an error occurs.
-        /// </summary>
         public ParticleBuilder OnDisconnected(Action<IParticle, Exception?> handler)
         {
             _onDisconnected = handler ?? throw new ArgumentNullException(nameof(handler));
             return this;
         }
 
-        /// <summary>
-        /// Registers a callback invoked when the connection is fully established and ready.
-        /// </summary>
         public ParticleBuilder OnConnected(Action<IParticle> handler)
         {
             _onConnected = handler ?? throw new ArgumentNullException(nameof(handler));
@@ -130,15 +125,12 @@ namespace Faster.Transport
 
         #region Build
 
-        /// <summary>
-        /// Builds and initializes an <see cref="IParticle"/> transport client or server
-        /// based on the configured <see cref="TransportMode"/>.
-        /// </summary>
         public IParticle Build()
         {
             return _mode switch
             {
                 TransportMode.Tcp => BuildTcp(),
+                TransportMode.Udp => BuildUdp(),
                 TransportMode.Ipc => BuildIpc(),
                 TransportMode.Inproc => BuildInproc(),
                 _ => throw new InvalidOperationException($"Unsupported transport mode: {_mode}")
@@ -151,17 +143,28 @@ namespace Faster.Transport
                 throw new InvalidOperationException("TCP mode requires ConnectTo(EndPoint).");
 
             var client = new Particle(_remoteEndPoint, _bufferSize, _parallelism);
-
-            if (_onReceived != null)
-                client.OnReceived = _onReceived;
-
-            if (_onDisconnected != null)
-                client.OnDisconnected = p => _onDisconnected(p, null);
-
-            if (_onConnected != null)
-                client.OnConnected = _onConnected;
-
+            ApplyHandlers(client);
             return client;
+        }
+
+        private IParticle BuildUdp()
+        {
+            // Always full-duplex: bind + optional remote
+            var local = (IPEndPoint?)_localEndPoint ?? new IPEndPoint(IPAddress.Any, 0);
+            var remote = (IPEndPoint?)_remoteEndPoint;
+
+            var udp = new UdpParticle(
+                localEndPoint: local,
+                remoteEndPoint: remote,
+                joinMulticast: _multicastGroup,
+                disableLoopback: _disableLoopback,
+                allowBroadcast: _allowBroadcast,
+                bufferSize: _bufferSize,
+                maxDegreeOfParallelism: _parallelism
+            );
+
+            ApplyHandlers(udp);
+            return udp;
         }
 
         private IParticle BuildIpc()
@@ -170,16 +173,7 @@ namespace Faster.Transport
                 throw new InvalidOperationException("IPC mode requires WithChannel(name).");
 
             var ipc = new MappedParticle(_channelName, _isServer, _ringCapacity);
-
-            if (_onReceived != null)
-                ipc.OnReceived = _onReceived;
-
-            if (_onDisconnected != null)
-                ipc.OnDisconnected = p => _onDisconnected(p, null);
-
-            if (_onConnected != null)
-                ipc.OnConnected = _onConnected;
-
+            ApplyHandlers(ipc);
             return ipc;
         }
 
@@ -189,17 +183,20 @@ namespace Faster.Transport
                 throw new InvalidOperationException("Inproc mode requires WithChannel(name).");
 
             var inproc = new InprocParticle(_channelName, _isServer, _bufferSize, _ringCapacity, _parallelism);
+            ApplyHandlers(inproc);
+            return inproc;
+        }
 
+        private void ApplyHandlers(IParticle p)
+        {
             if (_onReceived != null)
-                inproc.OnReceived = _onReceived;
+                p.OnReceived = _onReceived;
 
             if (_onDisconnected != null)
-                inproc.OnDisconnected = p => _onDisconnected(p, null);
+                p.OnDisconnected = x => _onDisconnected(x, null);
 
             if (_onConnected != null)
-                inproc.OnConnected = _onConnected;
-
-            return inproc;
+                p.OnConnected = _onConnected;
         }
 
         #endregion
@@ -210,13 +207,9 @@ namespace Faster.Transport
     /// </summary>
     public enum TransportMode
     {
-        /// <summary>In-process (no OS calls, fastest possible).</summary>
         Inproc,
-
-        /// <summary>Cross-process shared memory transport.</summary>
         Ipc,
-
-        /// <summary>Network-based TCP transport.</summary>
-        Tcp
+        Tcp,
+        Udp
     }
 }

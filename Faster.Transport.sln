@@ -21,9 +21,11 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport", "src\Tra
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.InProc.Sample", "samples\Faster.Transport.InProc.Sample\Faster.Transport.InProc.Sample.csproj", "{5C4A5580-8F1E-4835-A9F1-91852A520575}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.Unittests", "Faster.Transport.Unittests\Faster.Transport.Unittests.csproj", "{D544F8A4-F1A0-4F09-A9AD-35294FF38049}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.Ipc.Sample", "samples\Faster.Transport.Ipc.Sample\Faster.Transport.Ipc.Sample.csproj", "{698B504E-E62C-B446-90CA-D30610F0B580}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.Unittests", "test\Faster.Transport.Unittests.csproj", "{6B21FA9C-21D0-4A36-E16F-B943655982F8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Faster.Transport.Udp.Sample", "samples\Faster.Transport.Udp.Sample\Faster.Transport.Udp.Sample.csproj", "{426DBD6A-9CA1-4221-B073-7FF84B8C5B97}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -47,14 +49,18 @@ Global
 		{5C4A5580-8F1E-4835-A9F1-91852A520575}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5C4A5580-8F1E-4835-A9F1-91852A520575}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5C4A5580-8F1E-4835-A9F1-91852A520575}.Release|Any CPU.Build.0 = Release|Any CPU
-		{D544F8A4-F1A0-4F09-A9AD-35294FF38049}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{D544F8A4-F1A0-4F09-A9AD-35294FF38049}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{D544F8A4-F1A0-4F09-A9AD-35294FF38049}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{D544F8A4-F1A0-4F09-A9AD-35294FF38049}.Release|Any CPU.Build.0 = Release|Any CPU
 		{698B504E-E62C-B446-90CA-D30610F0B580}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{698B504E-E62C-B446-90CA-D30610F0B580}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{698B504E-E62C-B446-90CA-D30610F0B580}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{698B504E-E62C-B446-90CA-D30610F0B580}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6B21FA9C-21D0-4A36-E16F-B943655982F8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6B21FA9C-21D0-4A36-E16F-B943655982F8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6B21FA9C-21D0-4A36-E16F-B943655982F8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6B21FA9C-21D0-4A36-E16F-B943655982F8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{426DBD6A-9CA1-4221-B073-7FF84B8C5B97}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{426DBD6A-9CA1-4221-B073-7FF84B8C5B97}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{426DBD6A-9CA1-4221-B073-7FF84B8C5B97}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{426DBD6A-9CA1-4221-B073-7FF84B8C5B97}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -64,8 +70,9 @@ Global
 		{8BA4E35E-F560-87ED-6A77-3CAA79D3ED12} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 		{162B2FFD-5D8A-EF18-DFD1-FB0AF2601C6D} = {2B7A68E4-EA79-4045-BB9C-E5179EB60182}
 		{5C4A5580-8F1E-4835-A9F1-91852A520575} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
-		{D544F8A4-F1A0-4F09-A9AD-35294FF38049} = {F06F8673-E718-44F9-9C8C-EF87520A5FD2}
 		{698B504E-E62C-B446-90CA-D30610F0B580} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{6B21FA9C-21D0-4A36-E16F-B943655982F8} = {F06F8673-E718-44F9-9C8C-EF87520A5FD2}
+		{426DBD6A-9CA1-4221-B073-7FF84B8C5B97} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {E68002CE-095D-44D3-8033-99EEFC48774D}
