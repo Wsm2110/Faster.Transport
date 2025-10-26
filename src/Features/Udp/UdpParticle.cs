@@ -101,62 +101,81 @@ namespace Faster.Transport.Features.Udp
             _isMulticast = joinMulticast != null;
             _remoteEndPoint = remoteEndPoint;
 
-            // Create UDP socket
-            _socket = new Socket(localEndPoint?.AddressFamily ?? AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            // --- Socket creation ---
+            var af = localEndPoint?.AddressFamily ?? AddressFamily.InterNetwork;
+            _socket = new Socket(af, SocketType.Dgram, ProtocolType.Udp);
+
+            // ✅ Allow multiple sockets on same port (multicast / multiple listeners)
             _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 
+            // ✅ Enable broadcast if requested
             if (allowBroadcast)
                 _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Broadcast, true);
 
-            _socket.Bind(localEndPoint ?? new IPEndPoint(IPAddress.Any, 0));
+            // ✅ Big kernel buffers (tune if needed)
+            _socket.ReceiveBufferSize = 4 * 1024 * 1024; // 4 MB
+            _socket.SendBufferSize = 4 * 1024 * 1024; // 4 MB
+
+            // ✅ Ignore ICMP “Port Unreachable” (Windows) to avoid spurious SocketException
+            const int SIO_UDP_CONNRESET = -1744830452; // 0x9800000C
+            _socket.IOControl((IOControlCode)SIO_UDP_CONNRESET, BitConverter.GetBytes(false), null);
+
+            // ✅ IPv6 dual mode (must be set BEFORE Bind when AF=InterNetworkV6)
+            if (_socket.AddressFamily == AddressFamily.InterNetworkV6)
+                _socket.DualMode = true;
+
+            // ✅ Bind after options are set
+            _socket.Bind(localEndPoint ?? new IPEndPoint(
+                _socket.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any, 0));
 
             // --- Multicast Configuration ---
             if (_isMulticast && joinMulticast != null)
             {
-                if (localEndPoint.AddressFamily == AddressFamily.InterNetwork)
+                if (_socket.AddressFamily == AddressFamily.InterNetwork)
                 {
-                    // IPv4 multicast join
-                    _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
-                        new MulticastOption(joinMulticast, localEndPoint.Address));
+                    // IPv4 multicast join (use provided local address or Any)
+                    _socket.SetSocketOption(
+                        SocketOptionLevel.IP, SocketOptionName.AddMembership,
+                        new MulticastOption(joinMulticast, localEndPoint?.Address ?? IPAddress.Any));
+
                     _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, !disableLoopback);
                     _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastTimeToLive, 16);
+
+                    // Helpful when you care about source interface/addr
+                    _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.PacketInformation, true);
                 }
-                else if (localEndPoint.AddressFamily == AddressFamily.InterNetworkV6)
+                else if (_socket.AddressFamily == AddressFamily.InterNetworkV6)
                 {
                     // IPv6 multicast join
-                    _socket.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.AddMembership,
+                    _socket.SetSocketOption(
+                        SocketOptionLevel.IPv6, SocketOptionName.AddMembership,
                         new IPv6MulticastOption(joinMulticast));
+
                     _socket.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.MulticastLoopback, !disableLoopback);
                     _socket.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.MulticastTimeToLive, 16);
+
+                    _socket.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.PacketInformation, true);
                 }
             }
 
             // --- Buffer Management ---
-            var total = bufferSize * maxDegreeOfParallelism;
+            var total = bufferSize * 64;
             _bufferManager = new ConcurrentBufferManager(bufferSize, total);
-            _sendArgsPool = new SocketAsyncEventArgsPool(maxDegreeOfParallelism);
+            _sendArgsPool = new SocketAsyncEventArgsPool();
 
-            // Prepare a pool of preallocated SocketAsyncEventArgs for sending
-            for (int i = 0; i < maxDegreeOfParallelism; i++)
+            // Preallocate pooled SAEA for sends
+            for (int i = 0; i < 64; i++)
             {
                 var args = new SocketAsyncEventArgs();
                 _bufferManager.TrySetBuffer(args);
                 args.Completed += SendIOCompleted;
+                args.RemoteEndPoint = _remoteEndPoint;
                 _sendArgsPool.Add(args);
-            }
-
-            // --- Receiving Setup ---
-            _recvArgs = new SocketAsyncEventArgs
-            {
-                RemoteEndPoint = new IPEndPoint(IPAddress.Any, 0)
-            };
-            _bufferManager.TrySetBuffer(_recvArgs);
-            _recvArgs.Completed += ReceiveIOCompleted;
+            }     
 
             if (_canReceive)
                 StartReceive();
 
-            // Signal ready state
             OnConnected?.Invoke(this);
         }
 
@@ -179,14 +198,16 @@ namespace Faster.Transport.Features.Udp
                 throw new InvalidOperationException("No remote endpoint configured for sending.");
 
             _sendArgsPool.TryRent(out var args);
+
             var memory = args.MemoryBuffer.Slice(0, payload.Length);
             payload.CopyTo(memory.Span);
+
+            args.UserToken = args.MemoryBuffer;
             args.SetBuffer(memory);
-            args.RemoteEndPoint = _remoteEndPoint;
 
             // Fire async send (fire-and-forget)
             if (!_socket.SendToAsync(args))
-                ProcessSend(args);
+                ProcessSend(args, null);
         }
 
         /// <summary>
@@ -201,43 +222,55 @@ namespace Faster.Transport.Features.Udp
                 throw new InvalidOperationException("No remote endpoint configured for sending.");
 
             _sendArgsPool.TryRent(out var args);
+
             var memory = args.MemoryBuffer.Slice(0, payload.Length);
             payload.CopyTo(memory);
+
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            args.UserToken = new SendToken(tcs, args.MemoryBuffer);
             args.SetBuffer(memory);
             args.RemoteEndPoint = _remoteEndPoint;
 
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            args.UserToken = tcs;
-
             if (!_socket.SendToAsync(args))
-                ProcessSend(args);
+                ProcessSend(args, tcs);
 
             await tcs.Task.ConfigureAwait(false);
         }
 
-        private void SendIOCompleted(object? sender, SocketAsyncEventArgs e) => ProcessSend(e);
-
-        private void ProcessSend(SocketAsyncEventArgs e)
+        /// <summary>
+        /// Handles send operation completion (both sync and async paths).
+        /// </summary>
+        private void SendIOCompleted(object? _, SocketAsyncEventArgs e)
         {
-            try
-            {
-                var tcs = e.UserToken as TaskCompletionSource<bool>;
+            var token = e.UserToken as SendToken;
+            ProcessSend(e, token?.Tcs);
+        }
 
-                if (e.SocketError != SocketError.Success)
-                {
-                    tcs?.TrySetException(new SocketException((int)e.SocketError));
-                    _sendArgsPool.Return(e);
-                    Close(new SocketException((int)e.SocketError));
-                    return;
-                }
+        /// <summary>
+        /// Handles receive operation completion.
+        /// </summary>
+        private void ReceiveIOCompleted(object? _, SocketAsyncEventArgs e)
+        {
+            ProcessReceive(e);
+        }
 
-                tcs?.TrySetResult(true);
-            }
-            finally
+        private void ProcessSend(SocketAsyncEventArgs e, TaskCompletionSource<bool>? tcs)
+        {
+            var originalBuffer = e.UserToken is SendToken token ? token.OriginalBuffer : (Memory<byte>)e.UserToken;
+            e.SetBuffer(originalBuffer);
+
+            if (e.SocketError != SocketError.Success)
             {
-                e.UserToken = null;
+                var ex = new SocketException((int)e.SocketError);
+                tcs?.TrySetException(ex);
                 _sendArgsPool.Return(e);
+                Close(ex);
+                return;
             }
+
+            _sendArgsPool.Return(e);
+            tcs?.TrySetResult(true);
         }
 
         #endregion
@@ -249,11 +282,14 @@ namespace Faster.Transport.Features.Udp
         /// </summary>
         private void StartReceive()
         {
-            if (!_socket.ReceiveFromAsync(_recvArgs))
+            var recvArgs = new SocketAsyncEventArgs();
+            _bufferManager.TrySetBuffer(recvArgs);
+            recvArgs.Completed += ReceiveIOCompleted;
+            recvArgs.RemoteEndPoint = _remoteEndPoint;
+         
+            if (!_socket.ReceiveFromAsync(recvArgs))
                 ProcessReceive(_recvArgs);
         }
-
-        private void ReceiveIOCompleted(object? sender, SocketAsyncEventArgs e) => ProcessReceive(e);
 
         private void ProcessReceive(SocketAsyncEventArgs e)
         {
@@ -308,4 +344,9 @@ namespace Faster.Transport.Features.Udp
 
         #endregion
     }
+
+    /// <summary>
+    /// Internal metadata used to associate a TaskCompletionSource with a send buffer.
+    /// </summary>
+    public sealed record SendToken(TaskCompletionSource<bool> Tcs, Memory<byte> OriginalBuffer);
 }
