@@ -1,35 +1,54 @@
 ﻿using Faster.Transport.Inproc;
-using Faster.Transport.Ipc;
 using System.Text;
 
-await RunInprocDemo();
+// Entry point
+await RunInprocMultiClientDemo();
 
-static async Task RunInprocDemo()
+static async Task RunInprocMultiClientDemo()
 {
-    Console.WriteLine("▶ Starting In-Proc demo...");
+    Console.WriteLine("▶ Starting multi-client In-Proc demo...");
 
+    // Create a shared in-process reactor (server hub)
     var hub = new InprocReactor("faster-demo-inproc");
-    hub.ClientConnected += serverParticle =>
+
+    // Handle new client connections
+    hub.OnReceived += (p, data) =>
     {
-        Console.WriteLine("Inproc: client connected");
-        serverParticle.OnReceived = (_,data) =>
-        {
-            Console.WriteLine($"Server got: {Encoding.UTF8.GetString(data.Span)}");
-            serverParticle.SendAsync(Encoding.UTF8.GetBytes("pong")).AsTask().Wait();
-        };
+    
+        var msg = Encoding.UTF8.GetString(data.Span);
+        Console.WriteLine($"[SERVER] Received: {msg}");
+
+        // Echo back a response
+        p.Send(Encoding.UTF8.GetBytes($"pong: {msg}"));
+
     };
+
     hub.Start();
 
-    var client = new InprocParticle("faster-demo-inproc", isServer: false);
-    client.OnReceived = (_,data) => Console.WriteLine($"Client got: {Encoding.UTF8.GetString(data.Span)}");
+    // Simulate multiple concurrent clients
+    const int clientCount = 4;
+   
+    for (int i = 0; i < clientCount; i++)
+    {
+        var client = new InprocParticle("faster-demo-inproc", isServer: false);
+        var id = i;
+        client.OnReceived = (_, data) =>
+        {           
+            var text = Encoding.UTF8.GetString(data.Span);
+            Console.WriteLine($"[CLIENT {id}] Got: {text}");
+        };
 
+        client.Send(Encoding.UTF8.GetBytes($"ping: client-{id}"));
+    }
+
+    // Give time for connections to establish
     await Task.Delay(200);
 
-    await client.SendAsync(Encoding.UTF8.GetBytes("ping"));
-    await Task.Delay(200);
+  
+    Console.ReadLine();
+
 
     hub.Dispose();
-    client.Dispose();
 
-    Console.WriteLine("✔ In-Proc demo complete");
+    Console.WriteLine("✔ Multi-client In-Proc demo complete");
 }

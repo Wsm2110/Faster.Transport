@@ -27,12 +27,6 @@ namespace Faster.Transport.Inproc
         private readonly bool _isServer;
         private readonly CancellationTokenSource _cts = new();
 
-        // Buffer manager used to efficiently reuse message buffers
-        private readonly ConcurrentBufferManager _bufferManager;
-
-        // Frame parser for splitting byte streams into messages
-        private readonly FrameParser _parser;
-
         // Represents the bidirectional link between this particle and its peer
         private InprocLink? _link;
 
@@ -76,16 +70,8 @@ namespace Faster.Transport.Inproc
         public InprocParticle(string name, bool isServer, int bufferSize = 8192, int ringCapacity = 4096, int maxDegreeOfParallelism = 8)
         {
             _name = name ?? throw new ArgumentNullException(nameof(name));
-            _isServer = isServer;
-
-            // Create reusable buffer and parser
-            _bufferManager = new ConcurrentBufferManager(bufferSize, bufferSize * maxDegreeOfParallelism);
-            _parser = new FrameParser(bufferSize * maxDegreeOfParallelism);
-
-            // Hook up parser events
-            _parser.OnFrame = p => OnReceived?.Invoke(this, p);
-            _parser.OnError = ex => Close(ex);
-
+            _isServer = isServer;     
+          
             // If this is the client side, connect immediately
             if (!isServer)
             {
@@ -223,8 +209,7 @@ namespace Faster.Transport.Inproc
         public void Dispose()
         {
             Close();
-            _cts.Dispose();
-            _parser.Dispose();
+            _cts.Dispose();          
         }
 
         #endregion
