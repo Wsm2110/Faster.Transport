@@ -2,7 +2,7 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
-using System.Threading;
+using System.Runtime.InteropServices;
 
 namespace Faster.Transport.Primitives
 {
@@ -13,16 +13,24 @@ namespace Faster.Transport.Primitives
     /// </summary>
     public sealed class ConcurrentBufferManager : IDisposable
     {
-        private sealed class Slab
+        private sealed class Slab : IDisposable
         {
             public readonly byte[] Buffer;   // pinned
+            private readonly GCHandle _handle;
             public readonly int Length;
             public readonly int SliceSize;
             private int _currentIndex;
 
             public Slab(int length, int sliceSize)
             {
-                Buffer = GC.AllocateUninitializedArray<byte>(length, pinned: true);
+#if NET5_0_OR_GREATER
+        // Uninitialized on newer runtimes
+        Buffer = GC.AllocateUninitializedArray<byte>(length);
+#else
+                // netstandard2.1 fallback
+                Buffer = new byte[length];
+#endif
+                _handle = GCHandle.Alloc(Buffer, GCHandleType.Pinned);
                 Length = length;
                 SliceSize = sliceSize;
                 _currentIndex = 0;
@@ -39,6 +47,11 @@ namespace Faster.Transport.Primitives
                 }
                 offset = -1;
                 return false;
+            }
+
+            public void Dispose()
+            {
+                if (_handle.IsAllocated) _handle.Free();
             }
         }
 
@@ -182,9 +195,22 @@ namespace Faster.Transport.Primitives
             _disposed = true;
 
             _currentSlab = null;
-            while (_slabs.TryTake(out _)) { }
-            while (_free.TryPop(out _)) { }
+            while (_slabs.TryTake(out var slab))
+            {
+                if (slab is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+            }
+            while (_free.TryPop(out var freeSlab))
+            {
+                if (freeSlab.slab is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+            }
             Interlocked.Exchange(ref _allocatedBytes, 0);
+
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

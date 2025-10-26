@@ -1,228 +1,228 @@
 # 🚀 Faster.Transport
 
-> **Unified High-Performance Transport Layer for .NET**
+**Faster.Transport** is a high-performance, unified transport layer for .NET that abstracts multiple communication backends — including **In-Process**, **Shared Memory (IPC)**, **TCP**, and **UDP / Multicast** — under a single `IParticle` interface.
 
-`Faster.Transport` provides a **single abstraction (`IParticle`)** for multiple communication backends:
-- 🧠 **Inproc** – ultra-fast in-memory messaging inside one process  
-- 🧩 **IPC** – shared-memory interprocess communication  
-- ⚡ **TCP** – reliable framed network transport  
-- 📡 **UDP** – multicast, broadcast, and low-latency datagrams  
-
-Each transport implements **full-duplex communication**, unified **async APIs**, and supports **zero-copy buffer reuse** for extreme speed.
+It is designed for **ultra-low-latency**, **high-throughput** messaging across local, inter-process, and network boundaries.
 
 ---
 
-## 🧱 Architecture Overview
+## ✨ Features
 
-| Transport | Description | Best For | Backing Technology |
-|------------|-------------|----------|--------------------|
-| 🧠 **Inproc** | Runs entirely in memory within one process | Same-process subsystems | Lock-free ring buffer |
-| 🧩 **IPC** | High-speed shared-memory communication between processes | Cross-process communication | Memory-mapped files + SPSC rings |
-| ⚡ **TCP** | Reliable, ordered, framed byte stream | External connections | Sockets with length-prefixed framing |
-| 📡 **UDP** | Lightweight datagram messaging with multicast/broadcast support | Real-time telemetry | Datagram sockets with optional multicast groups |
+| Feature | Description |
+|----------|-------------|
+| 🧠 **Unified API** | All transports implement `IParticle` with `Send`, `SendAsync`, `OnReceived`, `OnConnected`, and `OnDisconnected`. |
+| ⚡ **Zero-Copy Messaging** | Uses `ReadOnlyMemory<byte>` and pooled buffers for minimal GC pressure. |
+| 🧩 **Multiple Backends** | Supports `Inproc`, `IPC`, `TCP`, and `UDP / Multicast`. |
+| 💬 **Bi-Directional Communication** | Every `IParticle` is full-duplex: send and receive simultaneously. |
+| 🧵 **Thread-Safe** | Built for high concurrency using lock-free queues. |
+| 🛰️ **Multicast Support** | Native UDP multicast support with TTL, loopback control, and auto configuration. |
+| 🧰 **Fluent Builder DSL** | Configure and build transports using a single fluent interface (`ParticleBuilder`). |
 
 ---
 
-## 🧰 Core Concepts
+## 🧱 Supported Transports
 
-### 🧩 `IParticle`
+| Transport | Description | Use Case |
+|------------|--------------|----------|
+| 🧩 **Inproc** | In-process memory channel, zero allocations | Testing, simulations, multi-component apps |
+| 💾 **IPC** | Shared-memory transport via mapped files | Cross-process, same machine |
+| 🌐 **TCP** | Network transport, reliable streaming | Client-server, LAN, remote |
+| 📡 **UDP** | Datagram transport, supports unicast & multicast | Telemetry, broadcast, discovery |
 
-Every transport implements the same core interface:
+---
+
+## ⚙️ Benchmark Results
+
+All benchmarks were run using **BenchmarkDotNet** on a **.NET 9.0** build targeting **x64** in Release mode.
+
+### 🧩 Inproc Transport (Single Process)
+
+| Method                   | Mean     | Error    | StdDev   | Median   | Allocated |
+|---------------------------|---------:|---------:|---------:|---------:|-----------:|
+| 🏆 **SendAsync 10k messages** | **5.080 ms** | 7.134 ms | 4.719 ms | 2.260 ms | 956.79 KB |
+
+**Interpretation:**  
+🚀 The `Inproc` transport achieves **~2.2 ms median latency** for 10,000 asynchronous message sends,  
+with **under 1 MB total allocations**, demonstrating near-zero overhead and outstanding local throughput.
+
+---
+
+## 🔧 Quick Start
+
+### 1️⃣ Create a TCP echo server and client
 
 ```csharp
-public interface IParticle : IDisposable
-{
-    Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
-    Action<IParticle>? OnDisconnected { get; set; }
-    Action<IParticle>? OnConnected { get; set; }
+using Faster.Transport;
+using System.Net;
+using System.Text;
 
-    ValueTask SendAsync(ReadOnlyMemory<byte> payload);
-    void Send(ReadOnlySpan<byte> payload);
-}
-```
-
-This ensures that any `IParticle` instance — TCP, UDP, IPC, or Inproc — can be used interchangeably in your systems.
-
----
-
-## 🧪 Building a Transport Instance
-
-All transports are created via the unified **`ParticleBuilder`**.
-
-```csharp
-var particle = new ParticleBuilder()
+// 🖥️ Server
+var server = new ParticleBuilder()
     .UseMode(TransportMode.Tcp)
-    .ConnectTo(new IPEndPoint(IPAddress.Loopback, 9000))
-    .OnConnected(p => Console.WriteLine("Connected!"))
-    .OnReceived((p, data) => Console.WriteLine($"Received {data.Length} bytes"))
-    .Build();
-```
-
-### Supported Modes
-
-| Enum | Transport | Description |
-|------|------------|-------------|
-| `TransportMode.Inproc` | In-process zero-copy | Super low latency internal messaging |
-| `TransportMode.Ipc` | Shared-memory cross-process | 10x faster than named pipes |
-| `TransportMode.Tcp` | Framed, reliable socket transport | Traditional client/server |
-| `TransportMode.Udp` | Datagram transport (unicast/multicast/broadcast) | Real-time telemetry |
-
----
-
-## ⚡ TCP Example
-
-```csharp
-var client = new ParticleBuilder()
-    .UseMode(TransportMode.Tcp)
-    .ConnectTo(new IPEndPoint(IPAddress.Loopback, 9500))
-    .OnConnected(p => Console.WriteLine("TCP connected"))
+    .BindTo(new IPEndPoint(IPAddress.Loopback, 5000))
     .OnReceived((p, msg) =>
     {
-        Console.WriteLine($"📩 TCP received: {Encoding.UTF8.GetString(msg.Span)}");
+        Console.WriteLine($"Server received: {Encoding.UTF8.GetString(msg.Span)}");
+        p.Send(msg.Span); // echo back
     })
     .Build();
 
+// 💻 Client
+var client = new ParticleBuilder()
+    .UseMode(TransportMode.Tcp)
+    .ConnectTo(new IPEndPoint(IPAddress.Loopback, 5000))
+    .OnReceived((_, msg) =>
+        Console.WriteLine($"Client got echo: {Encoding.UTF8.GetString(msg.Span)}"))
+    .Build();
+
+await Task.Delay(200); // wait for connect
 await client.SendAsync(Encoding.UTF8.GetBytes("Hello TCP!"));
 ```
 
 ---
 
-## 📡 UDP Example (Full Duplex)
-
-Full-duplex UDP socket for **send + receive** on one port.
+### 2️⃣ In-Process Messaging
 
 ```csharp
-var port = 9700;
-var local = new IPEndPoint(IPAddress.Any, port);
-var remote = new IPEndPoint(IPAddress.Loopback, port);
-
-var udp = new ParticleBuilder()
-    .UseMode(TransportMode.Udp)
-    .BindTo(local)
-    .ConnectTo(remote)
-    .OnConnected(p => Console.WriteLine("UDP ready"))
-    .OnReceived((p, msg) =>
-    {
-        Console.WriteLine($"📨 {Encoding.UTF8.GetString(msg.Span)}");
-    })
-    .Build();
-
-await udp.SendAsync(Encoding.UTF8.GetBytes("Ping via UDP!"));
-```
-
----
-
-## 🌍 UDP Multicast Example
-
-Broadcast messages to all peers in a multicast group.
-
-```csharp
-var group = IPAddress.Parse("239.0.0.123");
-var port = 9700;
-var local = new IPEndPoint(IPAddress.Any, 0);
-var multicast = new IPEndPoint(group, port);
-
-var peer = new ParticleBuilder()
-    .UseMode(TransportMode.Udp)
-    .BindTo(local)
-    .ConnectTo(multicast)
-    .JoinMulticastGroup(group, disableLoopback: false)
-    .OnConnected(p => Console.WriteLine("✅ Joined multicast group"))
-    .OnReceived((p, msg) =>
-    {
-        Console.WriteLine($"📩 {Encoding.UTF8.GetString(msg.Span)}");
-    })
-    .Build();
-
-await peer.SendAsync(Encoding.UTF8.GetBytes("Hello multicast group!"));
-```
-
-🧠 **Tip:**  
-Set `disableLoopback: true` if you don’t want to receive your own packets.
-
----
-
-## 🧠 Inproc Example
-
-Ultra-fast messaging inside a single process (no kernel calls):
-
-```csharp
-// Create server side
 var server = new ParticleBuilder()
     .UseMode(TransportMode.Inproc)
-    .WithChannel("demo", isServer: true)
-    .OnReceived((p, msg) =>
-    {
-        Console.WriteLine($"[Server] Got: {Encoding.UTF8.GetString(msg.Span)}");
-        p.Send("Echo"u8.ToArray());
-    })
+    .WithChannel("local-bus", isServer: true)
+    .OnReceived((_, msg) =>
+        Console.WriteLine($"Server received: {Encoding.UTF8.GetString(msg.Span)}"))
     .Build();
 
-// Create client side
 var client = new ParticleBuilder()
     .UseMode(TransportMode.Inproc)
-    .WithChannel("demo")
-    .OnReceived((p, msg) =>
-    {
-        Console.WriteLine($"[Client] Got reply: {Encoding.UTF8.GetString(msg.Span)}");
-    })
+    .WithChannel("local-bus")
     .Build();
 
-await client.SendAsync("Ping"u8.ToArray());
+await client.SendAsync(Encoding.UTF8.GetBytes("Ping Inproc!"));
 ```
 
 ---
 
-## 🧩 IPC Example (Cross-Process)
-
-Uses **memory-mapped files** and ring buffers to exchange messages across processes.
+### 3️⃣ IPC (Shared Memory)
 
 ```csharp
-// Server
 var server = new ParticleBuilder()
     .UseMode(TransportMode.Ipc)
-    .WithChannel("shared-mem", isServer: true)
-    .OnReceived((p, msg) =>
-    {
-        Console.WriteLine($"[Server] {Encoding.UTF8.GetString(msg.Span)}");
-        p.Send("Ack"u8.ToArray());
-    })
+    .WithChannel("shared-map", isServer: true)
+    .OnReceived((_, msg) =>
+        Console.WriteLine($"IPC Server: {Encoding.UTF8.GetString(msg.Span)}"))
     .Build();
 
-// Client
 var client = new ParticleBuilder()
     .UseMode(TransportMode.Ipc)
-    .WithChannel("shared-mem")
-    .OnReceived((p, msg) =>
-    {
-        Console.WriteLine($"[Client] Got: {Encoding.UTF8.GetString(msg.Span)}");
-    })
+    .WithChannel("shared-map")
     .Build();
 
-await client.SendAsync("Hi IPC!"u8.ToArray());
+await client.SendAsync(Encoding.UTF8.GetBytes("Hello from IPC!"));
 ```
 
 ---
 
-## ⚙️ Common Builder Options
+### 4️⃣ UDP / Multicast Messaging
+
+Now with **auto-configuring multicast** — no need to manually bind or connect!
+
+```csharp
+using Faster.Transport;
+using System.Net;
+using System.Text;
+
+var group = IPAddress.Parse("239.10.10.10");
+var port = 50000;
+
+// 🛰️ Multicast Sender
+var server = new ParticleBuilder()
+    .EnableMulticast(group, port, disableLoopback: false)
+    .Build();
+
+// 📡 Multicast Clients
+var client1 = new ParticleBuilder()
+    .EnableMulticast(group, port)
+    .OnReceived((_, msg) =>
+        Console.WriteLine($"Client 1 got: {Encoding.UTF8.GetString(msg.Span)}"))
+    .Build();
+
+var client2 = new ParticleBuilder()
+    .EnableMulticast(group, port)
+    .OnReceived((_, msg) =>
+        Console.WriteLine($"Client 2 got: {Encoding.UTF8.GetString(msg.Span)}"))
+    .Build();
+
+Console.WriteLine("Press ENTER to send 3 multicast messages...");
+Console.ReadLine();
+
+for (int i = 0; i < 3; i++)
+{
+    var msg = Encoding.UTF8.GetBytes($"Broadcast #{i + 1}");
+    await server.SendAsync(msg);
+    Console.WriteLine($"[Server] Sent Broadcast #{i + 1}");
+    await Task.Delay(300);
+}
+```
+
+✅ **Output**
+```
+[Server] Sent Broadcast #1
+Client 1 got: Broadcast #1
+Client 2 got: Broadcast #1
+...
+```
+
+---
+
+## 🧩 ParticleBuilder Overview
 
 | Method | Description |
-|--------|--------------|
-| `.UseMode(TransportMode)` | Selects backend |
-| `.BindTo(EndPoint)` | Sets local endpoint (UDP/TCP) |
-| `.ConnectTo(EndPoint)` | Sets remote target |
-| `.JoinMulticastGroup(IPAddress, disableLoopback)` | Enables multicast for UDP |
-| `.WithChannel(string, bool)` | Sets shared channel for IPC/Inproc |
-| `.AllowBroadcast(bool)` | Enables UDP broadcast |
-| `.WithBufferSize(int)` | Adjusts internal buffer size |
-| `.WithParallelism(int)` | Controls async send parallelism |
-| `.OnReceived(Action<IParticle, ReadOnlyMemory<byte>>)` | Handles received messages |
-| `.OnConnected(Action<IParticle>)` | Called when ready |
-| `.OnDisconnected(Action<IParticle, Exception?>)` | Handles disconnects |
+|---------|-------------|
+| `.UseMode(TransportMode)` | Selects the backend (Tcp, Inproc, Ipc, or Udp). |
+| `.BindTo(IPEndPoint)` | Binds to a local endpoint (for servers or UDP listeners). |
+| `.ConnectTo(IPEndPoint)` | Connects to a remote endpoint (for clients). |
+| `.EnableMulticast(IPAddress, int, bool)` | Configures and auto-binds a UDP multicast socket. |
+| `.AllowBroadcast(bool)` | Enables UDP broadcast mode. |
+| `.WithChannel(string, bool)` | Used by Inproc and IPC transports. |
+| `.OnReceived(Action<IParticle, ReadOnlyMemory<byte>>)` | Handles incoming messages. |
+| `.OnConnected(Action<IParticle>)` | Triggered when connection is ready. |
+| `.OnDisconnected(Action<IParticle, Exception?>)` | Triggered when connection closes. |
+| `.WithBufferSize(int)` | Sets per-operation buffer size. |
+| `.WithRingCapacity(int)` | Sets internal shared memory size (IPC/Inproc). |
+| `.WithParallelism(int)` | Sets degree of parallelism. |
 
 ---
 
-## 🧾 License
+## 🧪 Testing UDP Multicast Locally
 
-MIT © 2025 — Faster.Transport Team  
-Designed for high-performance real-time systems, simulation, and distributed computation.
+If messages are not received:
+
+1. Ensure `disableLoopback: false` in `.EnableMulticast()` for local tests.  
+2. Disable the firewall or open UDP port `50000`.  
+3. Verify via Wireshark: filter `udp.port == 50000`.  
+4. Loopback works only if `MulticastLoopback` is enabled.
+
+---
+
+## ⚙️ Requirements
+
+| Requirement | Minimum |
+|--------------|----------|
+| .NET | **.NET 9.0** or newer |
+| OS | Windows, Linux, macOS |
+| Recommended | .NET 8+ for maximum performance |
+
+---
+
+## 🧑‍💻 Example Projects
+
+| Project | Description |
+|----------|-------------|
+| `Faster.Transport.Demo` | Contains TCP, Inproc, IPC, and UDP demos |
+| `Faster.Transport.Tests` | Includes integration & multicast test suite |
+| `Faster.Transport.Primitives` | Zero-copy buffer and ring-based queue utilities |
+
+---
+
+## 🧰 License
+
+MIT License © 2025 — Designed for **speed, simplicity, and reliability.**

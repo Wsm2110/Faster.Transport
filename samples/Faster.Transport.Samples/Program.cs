@@ -21,8 +21,7 @@ class Program
             .ConnectTo(new IPEndPoint(IPAddress.Loopback, 5555))
             .WithBufferSize(16384)
             .WithParallelism(8)
-            .OnReceived((_, data) => Console.WriteLine($"Received {data.Length} bytes"))
-            .OnDisconnected((cli, ex) => Console.WriteLine($"Disconnected: {ex?.Message ?? "graceful"}"))
+            .OnReceived((_, data) => Console.WriteLine($"Received {data.Length} bytes"))    
             .Build();
 
         manualResetEvent.WaitOne();

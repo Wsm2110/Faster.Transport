@@ -1,8 +1,11 @@
 ﻿using Faster.Transport.Contracts;
 using Faster.Transport.Primitives;
+using System;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Faster.Transport.Features.Udp
 {
@@ -10,10 +13,10 @@ namespace Faster.Transport.Features.Udp
     /// High-performance UDP transport supporting unicast, multicast, and broadcast modes.
     /// 
     /// ✅ Key features:
-    /// - Supports both sending and receiving on the same socket.
-    /// - Optional multicast group join with loopback disable.
+    /// - Full duplex (send + receive) using a single socket.
+    /// - Optional multicast join and loopback disable.
     /// - Zero-copy buffer management via ConcurrentBufferManager.
-    /// - Non-blocking async receive loop.
+    /// - SocketAsyncEventArgs pooling for ultra-fast async sends.
     /// - Designed for ultra-low-latency telemetry, simulation, or real-time systems.
     /// </summary>
     public sealed class UdpParticle : IParticle
@@ -23,6 +26,7 @@ namespace Faster.Transport.Features.Udp
         private readonly CancellationTokenSource _cts = new();
         private readonly ConcurrentBufferManager _bufferManager;
         private readonly SocketAsyncEventArgs _recvArgs;
+        private readonly SocketAsyncEventArgsPool _sendArgsPool;
         private volatile bool _isDisposed;
 
         private readonly bool _isMulticast;
@@ -36,18 +40,8 @@ namespace Faster.Transport.Features.Udp
         public Action<IParticle>? OnConnected { get; set; }
         #endregion
 
-        #region Constructors
+        #region Constructor
 
-        /// <summary>
-        /// Creates a UDP particle that can send and/or receive datagrams.
-        /// </summary>
-        /// <param name="localEndPoint">Local endpoint to bind (for receiving, may be 0.0.0.0).</param>
-        /// <param name="remoteEndPoint">Optional remote endpoint (for sending).</param>
-        /// <param name="joinMulticast">Optional multicast group to join (null = unicast).</param>
-        /// <param name="disableLoopback">Whether to disable multicast loopback.</param>
-        /// <param name="allowBroadcast">Allow sending to broadcast addresses.</param>
-        /// <param name="bufferSize">Per-operation buffer size.</param>
-        /// <param name="maxDegreeOfParallelism">Parallelism for buffer pool.</param>
         public UdpParticle(
             IPEndPoint? localEndPoint = null,
             IPEndPoint? remoteEndPoint = null,
@@ -63,34 +57,53 @@ namespace Faster.Transport.Features.Udp
             _isMulticast = joinMulticast != null;
             _remoteEndPoint = remoteEndPoint;
 
-            _socket = new Socket(localEndPoint.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            _socket = new Socket(localEndPoint?.AddressFamily ?? AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 
             if (allowBroadcast)
                 _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Broadcast, true);
 
-            _socket.Bind(localEndPoint);
+            _socket.Bind(localEndPoint ?? new IPEndPoint(IPAddress.Any, 0));
 
+            // Multicast setup
             if (_isMulticast && joinMulticast != null)
             {
+                // Configure multicast interface
                 if (localEndPoint.AddressFamily == AddressFamily.InterNetwork)
                 {
+                    // Set default outgoing interface
+                    _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastInterface,
+                        (int)BitConverter.ToUInt32(localEndPoint.Address.GetAddressBytes(), 0));
+
+                    // Join group and set loopback & TTL
                     _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
                         new MulticastOption(joinMulticast, localEndPoint.Address));
                     _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, !disableLoopback);
+                    _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastTimeToLive, 16);
                 }
                 else if (localEndPoint.AddressFamily == AddressFamily.InterNetworkV6)
                 {
                     _socket.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.AddMembership,
                         new IPv6MulticastOption(joinMulticast));
                     _socket.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.MulticastLoopback, !disableLoopback);
+                    _socket.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.MulticastTimeToLive, 16);
                 }
             }
 
-            // Allocate buffers and start receive loop
+            // Buffer and event args pool
             var total = bufferSize * maxDegreeOfParallelism;
             _bufferManager = new ConcurrentBufferManager(bufferSize, total);
+            _sendArgsPool = new SocketAsyncEventArgsPool(maxDegreeOfParallelism);
 
+            for (int i = 0; i < maxDegreeOfParallelism; i++)
+            {
+                var args = new SocketAsyncEventArgs();
+                _bufferManager.TrySetBuffer(args);
+                args.Completed += SendIOCompleted;
+                _sendArgsPool.Add(args);
+            }
+
+            // Receive setup
             _recvArgs = new SocketAsyncEventArgs();
             _recvArgs.RemoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
             _bufferManager.TrySetBuffer(_recvArgs);
@@ -107,7 +120,7 @@ namespace Faster.Transport.Features.Udp
         #region Send
 
         /// <summary>
-        /// Sends a UDP datagram to the configured remote endpoint.
+        /// Sends a UDP datagram synchronously using a pooled buffer.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Send(ReadOnlySpan<byte> payload)
@@ -117,11 +130,20 @@ namespace Faster.Transport.Features.Udp
             if (!_canSend)
                 throw new InvalidOperationException("No remote endpoint configured for sending.");
 
-            _socket.SendTo(payload, _remoteEndPoint!);
+            _sendArgsPool.TryRent(out var args);
+           
+            var memory = args.MemoryBuffer.Slice(0, payload.Length);
+            payload.CopyTo(memory.Span);
+            args.SetBuffer(memory);
+            args.RemoteEndPoint = _remoteEndPoint;
+
+            // Fire async send (UDP is connectionless, safe to fire-and-forget)
+            if (!_socket.SendToAsync(args))
+                ProcessSend(args);
         }
 
         /// <summary>
-        /// Sends a UDP datagram asynchronously.
+        /// Sends a UDP datagram asynchronously using a pooled buffer.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public async ValueTask SendAsync(ReadOnlyMemory<byte> payload)
@@ -131,7 +153,45 @@ namespace Faster.Transport.Features.Udp
             if (!_canSend)
                 throw new InvalidOperationException("No remote endpoint configured for sending.");
 
-            await _socket.SendToAsync(payload, SocketFlags.None, _remoteEndPoint!).ConfigureAwait(false);
+            _sendArgsPool.TryRent(out var args);
+             
+            var memory = args.MemoryBuffer.Slice(0, payload.Length);
+            payload.CopyTo(memory);
+            args.SetBuffer(memory);
+            args.RemoteEndPoint = _remoteEndPoint;
+
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            args.UserToken = tcs;
+
+            if (!_socket.SendToAsync(args))
+                ProcessSend(args);
+
+            await tcs.Task.ConfigureAwait(false);
+        }
+
+        private void SendIOCompleted(object? sender, SocketAsyncEventArgs e) => ProcessSend(e);
+
+        private void ProcessSend(SocketAsyncEventArgs e)
+        {
+            try
+            {
+                var tcs = e.UserToken as TaskCompletionSource<bool>;
+
+                if (e.SocketError != SocketError.Success)
+                {
+                    tcs?.TrySetException(new SocketException((int)e.SocketError));
+                    _sendArgsPool.Return(e);
+                    Close(new SocketException((int)e.SocketError));
+                    return;
+                }
+
+                tcs?.TrySetResult(true);
+            }
+            finally
+            {
+                e.UserToken = null;
+                _sendArgsPool.Return(e);
+            }
         }
 
         #endregion
@@ -164,7 +224,6 @@ namespace Faster.Transport.Features.Udp
                     if (e.BytesTransferred > 0)
                     {
                         var msg = e.MemoryBuffer.Slice(0, e.BytesTransferred);
-
                         OnReceived?.Invoke(this, msg);
                     }
                 }

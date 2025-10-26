@@ -7,8 +7,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Transport\Faster.Transport.csproj" />
+    <ProjectReference Include="..\..\src\Faster.Transport.csproj" />
   </ItemGroup>
 
 </Project>

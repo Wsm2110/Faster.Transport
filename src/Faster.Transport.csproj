@@ -1,24 +1,27 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net9.0</TargetFrameworks>
+    <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- NuGet packaging metadata -->
     <Description>
       High-performance, zero-allocation transport framework for real-time .NET applications.
-      Includes Reactor (async TCP server) and Particle clients (Particle, ParticleFlux, ParticleBurst)
-      for scalable, ultra-low-latency message exchange. Ideal for trading systems, telemetry,
-      simulation, and distributed pipelines.
+      Provides unified client and server APIs built on a Reactor architecture with support for
+      TCP, IPC (shared memory), Inproc, and UDP transports.
+      Designed for ultra-low-latency, event-driven messaging in trading systems, telemetry, simulation,
+      and distributed processing pipelines.
     </Description>
     <PackageTags>
-      networking;transport;tcp;async;high-performance;low-latency;reactor;client;server;messaging;dotnet;csharp;event-driven;zerocopy;real-time;events;commands;
-    </PackageTags>   
+      networking;transport;tcp;ipc;inproc;udp;async;reactor;client;server;messaging;
+      high-performance;low-latency;zerocopy;real-time;event-driven;dotnet;csharp;distributed;
+      simulation;telemetry;commands;pipeline;communication;
+    </PackageTags>  
     <Company>Faster Framework</Company>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>Faster.Transport</PackageId>
-    <Version>0.0.8</Version>
+    <Version>0.0.9</Version>
     <Authors>Wiljan Ruizendaal</Authors>
     <RepositoryUrl>https://github.com/Wsm2110/Faster.Transport</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Wsm2110/Faster.Transport</PackageProjectUrl>
@@ -37,7 +40,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <Target Name="GenerateSnk" BeforeTargets="BeforeBuild" Condition="!Exists('$(ProjectDir)Faster.Transport.snk')">

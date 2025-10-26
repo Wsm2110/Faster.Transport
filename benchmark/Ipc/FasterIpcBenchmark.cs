@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 [IterationCount(10)]
 public class FasterIpcBenchmark
 {
-    private MappedParticle _server = null!;
+    private MappedReactor _server = null!;
     private MappedParticle _client = null!;
 
     private int _received;
@@ -22,33 +22,35 @@ public class FasterIpcBenchmark
     public void Setup()
     {
         // Create the server
-        _server = new MappedParticle("MyChannel", true);      
-
-        _server.OnReceived = (client, payload) =>
+        const string Base = "FasterIpcDemo";
+        var mre = new ManualResetEvent(false);
+        var server = new MappedReactor(Base);
+        server.OnConnected += id =>
         {
-            client.Send(payload.Span);
+            mre.Set();
+           // Console.WriteLine($"[SERVER] Client {id:X16} connected");
         };
-        
-        Console.WriteLine("Server ready. Waiting for client...");
+        server.OnReceived += (particle, mem) =>
+        {
+           // Console.WriteLine($"[SERVER] <- {id:X16}: {msg}");
+            particle.Send(mem.Span);
+        };
+        server.Start();
 
-        // give server a bit of time to start
-        Task.Delay(200).Wait();
+        _client = new MappedParticle(Base, 0xA1UL);
 
-        // Connect to same channel
-        _client = new MappedParticle("MyChannel", isServer: false);
-
-        _client.OnReceived = (particle, payload) =>
+        _client.OnReceived = (p, payload) =>
         {
             Interlocked.Increment(ref _received);
-            if (_received == 10000)
+            if (_received == 10_000)
             {
                 _tcs.SetResult(true);
             }
         };
 
-        Console.WriteLine("Client connected. Type messages:");
+        _client.Start();
 
-        Task.Delay(200).Wait(); // ensure connected
+        mre.WaitOne(); // wait for connection   
     }
 
     [GlobalCleanup]
@@ -70,10 +72,9 @@ public class FasterIpcBenchmark
     public async Task SendAsync_10K()
     {
         for (int i = 0; i < 10_000; i++)
-             _client.Send(_payload);
+            _client.Send(_payload);
 
         await _tcs.Task;
     }
 }
 
- 

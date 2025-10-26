@@ -18,7 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\src\Transport\Faster.Transport.csproj" />
+    <ProjectReference Include="..\src\Faster.Transport.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -165,7 +165,7 @@ namespace Faster.Transport.Inproc
                     throw new OperationCanceledException("Send operation canceled.");
             }
 
-            return ValueTask.CompletedTask;
+            return TaskCompat.CompletedValueTask;
         }
 
         #endregion
