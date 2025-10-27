@@ -199,7 +199,9 @@ await client.SendAsync("Hi IPC!"u8.ToArray());
 |------------|-----------|----------|------|------------|-------|
 | 🧠 **Inproc** | 10k async messages | 10 000 | **5.08 ms 🏆** | 956 KB | Lock-free ring buffer |
 | 🧩 **IPC** | 10k async messages | 10 000 | 17.69 ms | 776 B | Shared memory (MMF) |
-| 📡 **UDP** | 10k datagrams | 10 000 | 76.82 ms | 1.3 MB | Multicast capable |
+| 📡 **TCP** | 10k async messages| 10 000 | 76.82 ms | 1.3 MB | saea |
+| 📡 **UDP** | 10k datagrams | 10 000 | 92.82 ms | 1.6 MB | unicast |
+| 📡 **UDP** | 10k datagrams | 10 000 | 502.20 ms | 1.6 MB | multicast |
 
 All benchmarks performed using **BenchmarkDotNet** on **.NET 9.0**  
 CPU: AMD Ryzen 9 5950X | 64 GB DDR4 | Windows 11 x64  
