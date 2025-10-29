@@ -48,8 +48,10 @@ namespace Faster.Transport.Inproc
         /// <param name="hub">The reactor instance to remove.</param>
         public static void UnregisterHub(string name, InprocReactor hub)
         {
-            // Attempt to remove only if the key-value pair matches
-            _hubs.TryRemove(new(name, hub));
+            if (_hubs.ContainsKey(name))
+            {
+                _hubs.TryRemove(name, out _);
+            }
         }
 
         /// <summary>

@@ -1,5 +1,6 @@
-using System;
 using Faster.Transport.Contracts;
+using Faster.Transport.Primitives;
+using System;
 
 namespace Faster.Transport.Ipc
 {
@@ -98,7 +99,7 @@ namespace Faster.Transport.Ipc
         public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
         {
             _tx.Send(payload.Span);
-            return ValueTask.CompletedTask;
+            return TaskCompat.CompletedValueTask;
         }
 
         /// <summary>

@@ -2,6 +2,7 @@
 using System.Threading.Tasks;
 using Faster.Transport.Contracts;
 using Faster.Transport.Ipc;
+using Faster.Transport.Primitives;
 
 namespace Faster.Transport
 {
@@ -65,7 +66,7 @@ namespace Faster.Transport
         public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
         {
             _server.Broadcast(payload.Span);
-            return ValueTask.CompletedTask;
+            return TaskCompat.CompletedValueTask;
         }
 
         /// <summary>
@@ -136,7 +137,7 @@ namespace Faster.Transport
         public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
         {
             _server.Send(_id, payload.Span);
-            return ValueTask.CompletedTask;
+            return TaskCompat.CompletedValueTask;
         }
 
         /// <summary>

@@ -49,8 +49,7 @@ namespace Faster.Transport.Features.Udp
         private readonly Socket _socket;
         private readonly EndPoint? _remoteEndPoint;
         private readonly CancellationTokenSource _cts = new();
-        private readonly ConcurrentBufferManager _bufferManager;
-        private readonly SocketAsyncEventArgs _recvArgs;
+        private readonly ConcurrentBufferManager _bufferManager;    
         private readonly SocketAsyncEventArgsPool _sendArgsPool;
         private volatile bool _isDisposed;
 
@@ -288,7 +287,7 @@ namespace Faster.Transport.Features.Udp
             recvArgs.RemoteEndPoint = _remoteEndPoint;
          
             if (!_socket.ReceiveFromAsync(recvArgs))
-                ProcessReceive(_recvArgs);
+                ProcessReceive(recvArgs);
         }
 
         private void ProcessReceive(SocketAsyncEventArgs e)
@@ -330,8 +329,7 @@ namespace Faster.Transport.Features.Udp
             _isDisposed = true;
             try { _cts.Cancel(); } catch { }
             try { _socket.Dispose(); } catch { }
-            try { _recvArgs.Dispose(); } catch { }
-
+       
             OnDisconnected?.Invoke(this);
         }
 

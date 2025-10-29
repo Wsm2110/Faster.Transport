@@ -1,9 +1,10 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFrameworks>netstandard2.1</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- NuGet packaging metadata -->
     <Description>
@@ -17,11 +18,11 @@
       networking;transport;tcp;ipc;inproc;udp;async;reactor;client;server;messaging;
       high-performance;low-latency;zerocopy;real-time;event-driven;dotnet;csharp;distributed;
       simulation;telemetry;commands;pipeline;communication;
-    </PackageTags>  
+    </PackageTags>
     <Company>Faster Framework</Company>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>Faster.Transport</PackageId>
-    <Version>0.0.10</Version>
+    <Version>0.0.11</Version>
     <Authors>Wiljan Ruizendaal</Authors>
     <RepositoryUrl>https://github.com/Wsm2110/Faster.Transport</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Wsm2110/Faster.Transport</PackageProjectUrl>
@@ -41,6 +42,11 @@
 
   <ItemGroup>
     <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.5.4" />
   </ItemGroup>
 
   <Target Name="GenerateSnk" BeforeTargets="BeforeBuild" Condition="!Exists('$(ProjectDir)Faster.Transport.snk')">

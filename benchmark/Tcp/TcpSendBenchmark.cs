@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 [GcServer(true)]
 [WarmupCount(5)]
 [IterationCount(50)]
-public class FasterSocketSendASyncBenchmark
+public class TcpSendBenchmark
 {
     private Reactor _server;
     private Particle _client;
@@ -46,10 +46,9 @@ public class FasterSocketSendASyncBenchmark
         Thread.Sleep(100);
 
         _client = new Particle(endpoint);
-        _client.OnReceived = (_, payload) =>
+        _client.OnReceived = (p,payload) =>
         {
-            if (Interlocked.Increment(ref _received) == MessageCount)
-                _tcs.TrySetResult(true);
+            _tcs.TrySetResult(true);
         };
     }
 
@@ -64,18 +63,17 @@ public class FasterSocketSendASyncBenchmark
     public void IterationSetup()
     {
         Interlocked.Exchange(ref _received, 0);
-        _tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
+     }
 
     [Benchmark(Description = "Roundtrip throughput (async)")]
     public async Task RoundTripThroughput()
     {
         // Parallelized send
-
         for (int i = 0; i < MessageCount; i++)
         {
-            await _client.SendAsync(_payload);
-        }
-        await _tcs.Task;
+            _tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _client.Send(_payload.Span);
+            await _tcs.Task;
+        }      
     }
 }

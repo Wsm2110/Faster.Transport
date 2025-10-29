@@ -257,7 +257,9 @@ namespace Faster.Transport
             else
             {
                 // 🧩 IPC Client (MappedParticle)
-                ulong id = (ulong)Random.Shared.NextInt64();
+                var buffer = new byte[8];
+                new Random().NextBytes(buffer);
+                ulong id = BitConverter.ToUInt64(buffer, 0);
                 var client = new MappedParticle(_channelName, id, global: false, ringBytes: ringBytes);
 
                 if (_onReceived != null)
