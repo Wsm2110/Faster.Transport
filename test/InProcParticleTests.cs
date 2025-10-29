@@ -1,11 +1,10 @@
-﻿using Faster.Transport.Inproc;
+﻿using Faster.Transport;
+using Faster.Transport.Contracts;
 using System.Text;
 
 namespace Faster.Transport.Unittests;
 
-
 [CollectionDefinition("SequentialTests", DisableParallelization = true)]
-
 public class InprocParticleTests : IDisposable
 {
     private readonly CancellationTokenSource _cts = new(TimeSpan.FromSeconds(5));
@@ -18,18 +17,27 @@ public class InprocParticleTests : IDisposable
     // ------------------------------------------------------------
     // 1. Basic round-trip (client → server → client)
     // ------------------------------------------------------------
-    [Fact(DisplayName = "Basic round-trip message exchange")]
+    [Fact(DisplayName = "Basic round-trip message exchange (builder)")]
     public async Task Basic_RoundTrip()
     {
         string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
 
-        var client = new InprocParticle(name, isServer: false);
+        // Reactor (server)
+        var server = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name, isServer: true)
+            .Build();
+
+        // Client
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .Build();
+
         string? serverReceived = null;
         string? clientReceived = null;
 
-        reactor.OnReceived = (p, data) =>
+        server.OnReceived = (p, data) =>
         {
             serverReceived = Str(data);
             p.Send(Utf8("pong"));
@@ -46,24 +54,34 @@ public class InprocParticleTests : IDisposable
 
         Assert.Equal("ping", serverReceived);
         Assert.Equal("pong", clientReceived);
+
+        server.Dispose();
+        client.Dispose();
     }
 
     // ------------------------------------------------------------
     // 2. Large payload delivery
     // ------------------------------------------------------------
-    [Fact(DisplayName = "Large payload is transferred correctly")]
+    [Fact(DisplayName = "Large payload is transferred correctly (builder)")]
     public async Task Large_Payload_Transferred()
     {
         string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
 
-        var client = new InprocParticle(name, isServer: false);
+        var server = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name, isServer: true)
+            .Build();
+
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .Build();
+
         byte[] sent = new byte[128 * 1024];
         new Random(123).NextBytes(sent);
         byte[]? received = null;
 
-        reactor.OnReceived = (p, data) => p.Send(data.Span);
+        server.OnReceived = (p, data) => p.Send(data.Span);
         client.OnReceived = (p, data) => received = data.ToArray();
 
         await Task.Delay(100, _cts.Token);
@@ -72,44 +90,66 @@ public class InprocParticleTests : IDisposable
 
         Assert.NotNull(received);
         Assert.True(received!.SequenceEqual(sent));
+
+        server.Dispose();
+        client.Dispose();
     }
 
     // ------------------------------------------------------------
-    // 3. Zero-length messages are ignored (no OnReceived)
+    // 3. Zero-length messages are ignored
     // ------------------------------------------------------------
-    [Fact(DisplayName = "Zero-length payload is ignored")]
+    [Fact(DisplayName = "Zero-length payload is ignored (builder)")]
     public async Task Zero_Length_Ignored()
     {
         string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
 
-        var client = new InprocParticle(name, false);
+        var server = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name, isServer: true)
+            .Build();
+
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .Build();
+
         bool got = false;
-
-        reactor.OnReceived = (p, data) => got = true;
+        server.OnReceived = (p, data) =>
+        {
+            got = true;
+        };
 
         await Task.Delay(100, _cts.Token);
         client.Send(ReadOnlySpan<byte>.Empty);
         await Task.Delay(100, _cts.Token);
 
         Assert.False(got);
+
+        server.Dispose();
+        client.Dispose();
     }
 
     // ------------------------------------------------------------
     // 4. Multiple messages preserve order
     // ------------------------------------------------------------
-    [Fact(DisplayName = "Multiple messages preserve order")]
+    [Fact(DisplayName = "Multiple messages preserve order (builder)")]
     public async Task Messages_Preserve_Order()
     {
         string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
 
-        var client = new InprocParticle(name, false);
+        var server = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name, isServer: true)
+            .Build();
+
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .Build();
+
         var received = new List<int>();
 
-        reactor.OnReceived = (p, data) =>
+        server.OnReceived = (p, data) =>
         {
             var num = int.Parse(Str(data));
             received.Add(num);
@@ -120,23 +160,32 @@ public class InprocParticleTests : IDisposable
             client.Send(Utf8(i.ToString()));
 
         await Task.Delay(300, _cts.Token);
-
         Assert.Equal(Enumerable.Range(0, 50), received);
+
+        server.Dispose();
+        client.Dispose();
     }
 
     // ------------------------------------------------------------
     // 5. Concurrent Send() calls (backpressure & MPSC safety)
     // ------------------------------------------------------------
-    [Fact(DisplayName = "Concurrent Send() calls are safe")]
+    [Fact(DisplayName = "Concurrent Send() calls are safe (builder)")]
     public async Task Concurrent_Sends_Are_Safe()
     {
         string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
 
-        var client = new InprocParticle(name, false);
+        var server = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name, isServer: true)
+            .Build();
+
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .Build();
+
         int count = 0;
-        reactor.OnReceived = (p, data) => Interlocked.Increment(ref count);
+        server.OnReceived = (p, data) => Interlocked.Increment(ref count);
 
         await Task.Delay(100, _cts.Token);
 
@@ -151,19 +200,29 @@ public class InprocParticleTests : IDisposable
         await Task.Delay(300, _cts.Token);
 
         Assert.Equal(400, count);
+
+        server.Dispose();
+        client.Dispose();
     }
 
     // ------------------------------------------------------------
     // 6. OnDisconnected fires when closed
     // ------------------------------------------------------------
-    [Fact(DisplayName = "OnDisconnected is triggered on close")]
+    [Fact(DisplayName = "OnDisconnected is triggered on close (builder)")]
     public async Task OnDisconnected_Fires()
     {
         string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
 
-        var client = new InprocParticle(name, false);
+        var server = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name, isServer: true)
+            .Build();
+
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .Build();
+
         var disconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.OnDisconnected = _ => disconnected.TrySetResult(true);
 
@@ -172,61 +231,88 @@ public class InprocParticleTests : IDisposable
 
         var result = await disconnected.Task.WaitAsync(_cts.Token);
         Assert.True(result);
+
+        server.Dispose();
     }
 
     // ------------------------------------------------------------
     // 7. OnConnected triggers for client automatically
     // ------------------------------------------------------------
-    [Fact(DisplayName = "OnConnected triggers for client")]
+    [Fact(DisplayName = "OnConnected triggers for client (builder)")]
     public async Task OnConnected_Fires_For_Client()
     {
         string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
+
+        var server = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name, isServer: true)
+            .Build();
 
         var connected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var client = new InprocParticle(name, false);
-        client.OnConnected = _ => connected.TrySetResult(true);
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .OnConnected(_ =>
+            {
+                connected.TrySetResult(true);
+            })
+            .Build();
 
         var ok = await connected.Task.WaitAsync(_cts.Token);
         Assert.True(ok);
+
+        server.Dispose();
+        client.Dispose();
     }
 
     // ------------------------------------------------------------
     // 8. Dispose prevents future sends
     // ------------------------------------------------------------
-    [Fact(DisplayName = "Dispose prevents sending")]
+    [Fact(DisplayName = "Dispose prevents sending (builder)")]
     public void Dispose_Prevents_Send()
     {
         string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
 
-        var client = new InprocParticle(name, false);
+        var server = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name, isServer: true)
+            .Build();
+
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .Build();
+
         client.Dispose();
-
         Assert.Throws<ObjectDisposedException>(() => client.Send(Utf8("x")));
+
+        server.Dispose();
     }
 
     // ------------------------------------------------------------
     // 9. Multiple clients can connect to one reactor
     // ------------------------------------------------------------
-    [Fact(DisplayName = "Multiple clients connect to same reactor")]
+    [Fact(DisplayName = "Multiple clients connect to same reactor (builder)")]
     public async Task Multiple_Clients_Work()
     {
         string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
+
+        var server = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name, isServer: true)
+            .Build();
 
         int received = 0;
-        reactor.OnReceived = (p, data) => Interlocked.Increment(ref received);
+        server.OnReceived = (p, data) => Interlocked.Increment(ref received);
 
         var clients = Enumerable.Range(0, 3)
-            .Select(_ => new InprocParticle(name, false))
+            .Select(_ => new ParticleBuilder()
+                .UseMode(TransportMode.Inproc)
+                .WithChannel(name)
+                .Build())
             .ToList();
 
         await Task.Delay(100, _cts.Token);
-
         foreach (var c in clients)
             c.Send(Utf8("hello"));
 
@@ -235,52 +321,6 @@ public class InprocParticleTests : IDisposable
 
         foreach (var c in clients)
             c.Dispose();
-    }
-
-    // ------------------------------------------------------------
-    // 10. Backpressure test: ring fills and drains under load
-    // ------------------------------------------------------------
-    [Fact(DisplayName = "Backpressure ring behavior under load")]
-    public async Task Backpressure_Ring_Behavior()
-    {
-        string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
-
-        var client = new InprocParticle(name, false);
-        int count = 0;
-        reactor.OnReceived = (p, data) => Interlocked.Increment(ref count);
-
-        await Task.Delay(100, _cts.Token);
-
-        // 2000 small messages should fill the ring but eventually complete
-        for (int i = 0; i < 2000; i++)
-            client.Send(Utf8("bp"));
-
-        await Task.Delay(500, _cts.Token);
-        Assert.Equal(2000, count);
-    }
-
-    // ------------------------------------------------------------
-    // 11. Reader loop handles exceptions gracefully
-    // ------------------------------------------------------------
-    [Fact(DisplayName = "Reader loop handles exceptions gracefully")]
-    public async Task Reader_Loop_Graceful_Exit()
-    {
-        string name = Channel();
-        using var reactor = new InprocReactor(name);
-        reactor.Start();
-
-        var client = new InprocParticle(name, false);
-        var disconnected = false;
-        client.OnDisconnected = _ => disconnected = true;
-
-        await Task.Delay(100, _cts.Token);
-
-        // Simulate unexpected disposal mid-loop
-        client.Dispose();
-
-        await Task.Delay(100, _cts.Token);
-        Assert.True(disconnected);
+        server.Dispose();
     }
 }

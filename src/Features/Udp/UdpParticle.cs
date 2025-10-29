@@ -47,7 +47,7 @@ namespace Faster.Transport.Features.Udp
     public sealed class UdpParticle : IParticle
     {
         private readonly Socket _socket;
-        private readonly EndPoint? _remoteEndPoint;
+        private readonly EndPoint? _remoteEndPoint = new IPEndPoint(IPAddress.Loopback, 0); 
         private readonly CancellationTokenSource _cts = new();
         private readonly ConcurrentBufferManager _bufferManager;    
         private readonly SocketAsyncEventArgsPool _sendArgsPool;
@@ -86,8 +86,8 @@ namespace Faster.Transport.Features.Udp
         /// and starts the background receive loop automatically.
         /// </remarks>
         public UdpParticle(
-            IPEndPoint? localEndPoint = null,
-            IPEndPoint? remoteEndPoint = null,
+            IPEndPoint? localEndPoint,
+            IPEndPoint? remoteEndPoint,
             IPAddress? joinMulticast = null,
             bool disableLoopback = true,
             bool allowBroadcast = false,

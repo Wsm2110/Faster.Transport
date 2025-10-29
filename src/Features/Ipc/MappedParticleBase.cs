@@ -88,7 +88,13 @@ namespace Faster.Transport.Ipc
         /// Sending is synchronous and typically completes very quickly, since 
         /// it just writes into a shared memory ring buffer.
         /// </remarks>
-        public void Send(ReadOnlySpan<byte> payload) => _tx.Send(payload);
+        public void Send(ReadOnlySpan<byte> payload)
+        {
+            if (payload.Length > _rx.Length)
+                throw new ArgumentException($"Payload size {payload.Length} exceeds maximum message size {_rx.Length}");
+
+            _tx.Send(payload);
+        }
 
         /// <summary>
         /// Sends a message asynchronously. 
@@ -98,6 +104,9 @@ namespace Faster.Transport.Ipc
         /// <returns>A completed <see cref="ValueTask"/> once the data is written.</returns>
         public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
         {
+            if (payload.Length > _rx.Length)
+                throw new ArgumentException($"Payload size {payload.Length} exceeds maximum message size {_rx.Length}");
+
             _tx.Send(payload.Span);
             return TaskCompat.CompletedValueTask;
         }

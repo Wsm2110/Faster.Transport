@@ -37,7 +37,7 @@ public class TcpSendBenchmark
         _server = new Reactor(endpoint);
         _server.OnReceived = (conn, payload) =>
         {
-            conn.Return(_payload.Span); // echo back
+            conn.Send(_payload.Span); // echo back
         };
 
         _server.Start();

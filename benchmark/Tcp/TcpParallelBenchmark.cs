@@ -37,7 +37,7 @@ public class FasterConcurrentBenchmark
         _server = new Reactor(endpoint, 64);
         _server.OnReceived = (conn, payload) =>
         {
-            conn.Return(_payload.Span); // echo back
+            conn.Send(_payload.Span); // echo back
         };
 
         _server.Start();

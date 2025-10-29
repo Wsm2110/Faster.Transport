@@ -38,11 +38,13 @@ namespace Faster.Transport.Ipc
         private readonly MemoryMappedFile _mmf;
         private readonly MemoryMappedViewAccessor _view;
         private readonly EventWaitHandle? _signal;
-        private readonly bool _reader;
+        private readonly bool _reader;    
         private readonly SharedSpscRing _ring;
         private readonly byte[] _recv;
         private readonly Thread? _rxThread;
         private volatile bool _running;
+
+        public int Length { get; private set; }
 
         /// <summary>
         /// Raised when a complete message frame is received.
@@ -72,6 +74,7 @@ namespace Faster.Transport.Ipc
             bool useEvent = false)
         {
             _reader = isReader;
+            Length = totalBytes;
 
             // Create or attach to the shared memory region
             _mmf = create

@@ -43,7 +43,7 @@ public class UdpMulticastBenchmark
         // 🛰️ Server (Sender)
         _server = new ParticleBuilder()
             .UseMode(TransportMode.Udp)          
-            .EnableMulticast(group, port, disableLoopback: false)
+            .WithMulticast(group, port, disableLoopback: false)
             .OnReceived((p, data) => p.Send(_payload.Span)) // echo back)
             .OnConnected(p => mre.Set())
             .Build();
@@ -51,7 +51,7 @@ public class UdpMulticastBenchmark
         // 📡 Clients
         _client = new ParticleBuilder()          
             .UseMode(TransportMode.Udp)
-            .EnableMulticast(group, port, disableLoopback: false)
+            .WithMulticast(group, port, disableLoopback: false)
             .OnReceived((_, msg) =>
             {
                 if (Interlocked.Increment(ref _received) == _messageCount)

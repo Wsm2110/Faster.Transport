@@ -21,7 +21,7 @@ namespace Faster.Transport.Inproc
     /// This class is the in-memory equivalent of an IPC or TCP server — 
     /// but everything runs inside the same process for **maximum performance**.
     /// </summary>
-    public sealed class InprocReactor : IDisposable
+    public sealed class InprocReactor: IDisposable
     {
         #region Fields
 
@@ -48,12 +48,12 @@ namespace Faster.Transport.Inproc
         /// <summary>
         /// Triggered when a new client connects successfully.
         /// </summary>
-        public event Action<IParticle>? ClientConnected;
+        public Action<IParticle>? ClientConnected;
 
         /// <summary>
         /// Triggered when a client disconnects or an error occurs.
         /// </summary>
-        public event Action<IParticle>? ClientDisconnected;
+        public Action<IParticle>? ClientDisconnected;
 
         /// <summary>
         /// Triggered whenever any connected client sends a message to this reactor.

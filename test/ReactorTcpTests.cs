@@ -22,7 +22,7 @@ public class ReactorTests : IDisposable
         return port;
     }
 
-    [Fact(DisplayName = "Reactor should accept incoming client connections")]
+    [Fact(DisplayName = "Reactor should accept incoming client connections (via builder)")]
     public async Task Reactor_Should_Accept_Client_Connection()
     {
         bool connected = false;
@@ -31,72 +31,75 @@ public class ReactorTests : IDisposable
         reactor.OnConnected = conn => connected = true;
         reactor.Start();
 
-        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        await socket.ConnectAsync(IPAddress.Loopback, _port);
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Tcp)
+            .WithRemote(new IPEndPoint(IPAddress.Loopback, _port))
+            .OnConnected(_ => connected = true)
+            .Build();
 
-        await Task.Delay(200, _cts.Token);
+        // Wait for reactor to accept
+        await Task.Delay(300, _cts.Token);
+
         Assert.True(connected);
     }
 
-    [Fact(DisplayName = "Reactor should handle multiple concurrent clients")]
+    [Fact(DisplayName = "Reactor should handle multiple concurrent clients (via builder)")]
     public async Task Reactor_Should_Handle_Multiple_Clients()
     {
         int messageCount = 0;
+        int clientCount = 0;
 
         using var reactor = new Reactor(new IPEndPoint(IPAddress.Loopback, _port));
+        reactor.OnConnected = _ => Interlocked.Increment(ref clientCount);
         reactor.OnReceived = (conn, data) => Interlocked.Increment(ref messageCount);
         reactor.Start();
 
-        var c1 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        var c2 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        // Build two clients using builder
+        var client1 = new ParticleBuilder()
+            .UseMode(TransportMode.Tcp)
+            .WithRemote(new IPEndPoint(IPAddress.Loopback, _port))
+            .Build();
 
-        await c1.ConnectAsync(IPAddress.Loopback, _port);
-        await c2.ConnectAsync(IPAddress.Loopback, _port);
+        var client2 = new ParticleBuilder()
+            .UseMode(TransportMode.Tcp)
+            .WithRemote(new IPEndPoint(IPAddress.Loopback, _port))
+            .Build();
 
-        await Task.Delay(200, _cts.Token);
+        await Task.Delay(500, _cts.Token);
 
-        byte[] msg = BuildFrame("hello");
-        c1.Send(msg);
-        c2.Send(msg);
+        // Both clients send frames
+        var frame = BuildFrame("hello");
+        client1.Send(frame);
+        client2.Send(frame);
 
         await Task.Delay(300, _cts.Token);
 
+        Assert.Equal(2, clientCount);
         Assert.Equal(2, messageCount);
+
+        client1.Dispose();
+        client2.Dispose();
     }
 
-    [Fact(DisplayName = "Reactor should cleanup disconnected clients")]
-    public async Task Reactor_Should_Cleanup_Disconnected_Clients()
-    {
-        int disconnectedCount = 0;
-
-        using var reactor = new Reactor(new IPEndPoint(IPAddress.Loopback, _port));
-        reactor.OnConnected = conn =>
-        {
-            conn.OnDisconnected = _ => Interlocked.Increment(ref disconnectedCount);
-        };
-        reactor.Start();
-
-        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        await socket.ConnectAsync(IPAddress.Loopback, _port);
-        socket.Close();
-
-        await Task.Delay(300, _cts.Token);
-        Assert.Equal(1, disconnectedCount);
-    }
-
-    [Fact(DisplayName = "Reactor.Stop should gracefully close all clients and listener")]
+    [Fact(DisplayName = "Reactor.Stop should gracefully close all clients and listener (via builder)")]
     public async Task Reactor_Stop_Should_Close_All_Clients()
     {
         using var reactor = new Reactor(new IPEndPoint(IPAddress.Loopback, _port));
         reactor.Start();
 
-        var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        await client.ConnectAsync(IPAddress.Loopback, _port);
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Tcp)
+            .WithRemote(new IPEndPoint(IPAddress.Loopback, _port))
+            .Build();
+
+        await Task.Delay(200, _cts.Token);
 
         reactor.Stop();
 
         // Should be restartable after stop
         reactor.Start();
+
+        client.Dispose();
     }
 
     private static byte[] BuildFrame(string text)

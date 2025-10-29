@@ -38,8 +38,8 @@ public class UdpUnicastEchoBenchmark
         // 🛰️ Server
         _server = new ParticleBuilder()
             .UseMode(TransportMode.Udp)
-            .BindTo(new IPEndPoint(IPAddress.Any, _serverEndpoint.Port))
-            .ConnectTo(_clientEndpoint)
+            .WithLocal(new IPEndPoint(IPAddress.Any, _serverEndpoint.Port))
+            .WithRemote(_clientEndpoint)
             .OnReceived((p, msg) =>
             {
                 // Echo back to client
@@ -50,8 +50,8 @@ public class UdpUnicastEchoBenchmark
         // 📡 Client
         _client = new ParticleBuilder()
             .UseMode(TransportMode.Udp)
-            .BindTo(new IPEndPoint(IPAddress.Any, _clientEndpoint.Port))
-            .ConnectTo(_serverEndpoint)
+            .WithLocal(new IPEndPoint(IPAddress.Any, _clientEndpoint.Port))
+            .WithRemote(_serverEndpoint)
             .OnReceived((p, msg) =>
             {
                 if (Interlocked.Increment(ref _received) == MessageCount)

@@ -50,7 +50,7 @@ namespace Faster.Transport.Ipc
         /// </list>
         /// The server discovers these maps via the registry file.
         /// </remarks>
-        public MappedParticle(string baseName, ulong clientId, bool global = false, int ringBytes = (128 + (1 << 20)))
+        public MappedParticle(string baseName, ulong clientId, bool global = false, int ringBytes = 1 << 20)
             : base(
                 // Create inbound (server → client) channel
                 rx: new DirectionalChannel($"{(global ? "Global" : "Local")}\\{baseName}.S2C.{clientId:X16}.map",

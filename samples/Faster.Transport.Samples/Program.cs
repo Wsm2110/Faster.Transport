@@ -10,7 +10,7 @@ class Program
 
         // Start your Reactor server somewhere:
         var server = new Reactor(new IPEndPoint(IPAddress.Any, 5555));
-        server.OnReceived = (client, payload) => client.Return(payload.Span);
+        server.OnReceived = (client, payload) => client.Send(payload.Span);
         server.OnConnected = (client) =>
         {
             manualResetEvent.Set();
@@ -18,7 +18,7 @@ class Program
         server.Start();
 
         var client = new ParticleBuilder()
-            .ConnectTo(new IPEndPoint(IPAddress.Loopback, 5555))
+            .WithRemote(new IPEndPoint(IPAddress.Loopback, 5555))
             .WithBufferSize(16384)
             .WithParallelism(8)
             .OnReceived((_, data) => Console.WriteLine($"Received {data.Length} bytes"))    

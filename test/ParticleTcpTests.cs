@@ -38,7 +38,7 @@ public class ParticleTcpTests : IDisposable
         reactor.OnReceived = (conn, data) =>
         {
             received = Encoding.UTF8.GetString(data.Span);
-            conn.Return(Encoding.UTF8.GetBytes("pong"));
+            conn.Send(Encoding.UTF8.GetBytes("pong"));
         };
         reactor.Start();
 
@@ -64,7 +64,7 @@ public class ParticleTcpTests : IDisposable
         var port = GetFreeTcpPort();
 
         using var reactor = new Reactor(new IPEndPoint(IPAddress.Loopback, port));
-        reactor.OnReceived = (conn, data) => conn.Return(data.Span);
+        reactor.OnReceived = (client, data) => client.Send(data.Span);
         reactor.Start();
 
         var client = new Particle(new IPEndPoint(IPAddress.Loopback, port));

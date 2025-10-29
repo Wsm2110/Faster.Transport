@@ -9,13 +9,13 @@ var port = 50000;
 // 🛰️ Server (Sender)
 var server = new ParticleBuilder()
     .UseMode(TransportMode.Udp)
-    .EnableMulticast(group, port, disableLoopback: false)
+    .WithMulticast(group, port, disableLoopback: false)
     .Build();
 
 // 📡 Clients
 var client1 = new ParticleBuilder()
     .UseMode(TransportMode.Udp)
-    .EnableMulticast(group, port, disableLoopback: false)
+    .WithMulticast(group, port, disableLoopback: false)
     .OnReceived((_, msg) =>
     {
         Console.WriteLine($"Client 1 got: {Encoding.UTF8.GetString(msg.Span)}");
@@ -24,7 +24,7 @@ var client1 = new ParticleBuilder()
 
 var client2 = new ParticleBuilder()
     .UseMode(TransportMode.Udp)
-    .EnableMulticast(group, port, disableLoopback: false)
+    .WithMulticast(group, port, disableLoopback: false)
     .OnReceived((_, msg) =>
     {
         Console.WriteLine($"Client 2 got: {Encoding.UTF8.GetString(msg.Span)}");

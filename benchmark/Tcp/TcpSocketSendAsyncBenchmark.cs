@@ -35,9 +35,9 @@ public class TcpSocketSendAsyncBenchmark
         var endpoint = new IPEndPoint(IPAddress.Loopback, 5555);
 
         _server = new Reactor(endpoint);
-        _server.OnReceived = (conn, payload) =>
+        _server.OnReceived = (client, payload) =>
         {
-            conn.Return(_payload.Span); // echo back
+            client.Send(_payload.Span); // echo back
         };
 
         _server.Start();

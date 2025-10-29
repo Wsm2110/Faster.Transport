@@ -1,5 +1,7 @@
 ﻿using Faster.Transport.Contracts;
 using Faster.Transport.Primitives;
+using System;
+using System.Xml.Linq;
 
 namespace Faster.Transport.Inproc
 {
@@ -25,6 +27,7 @@ namespace Faster.Transport.Inproc
 
         private readonly string _name;
         private readonly bool _isServer;
+        private readonly int _ringCapacity;
         private readonly CancellationTokenSource _cts = new();
 
         // Represents the bidirectional link between this particle and its peer
@@ -70,16 +73,8 @@ namespace Faster.Transport.Inproc
         public InprocParticle(string name, bool isServer, int bufferSize = 8192, int ringCapacity = 4096, int maxDegreeOfParallelism = 8)
         {
             _name = name ?? throw new ArgumentNullException(nameof(name));
-            _isServer = isServer;     
-          
-            // If this is the client side, connect immediately
-            if (!isServer)
-            {
-                var link = InprocRegistry.Connect(name, ringCapacity);
-                AttachLink(link);
-            }
-
-            OnConnected?.Invoke(this);  
+            _isServer = isServer;
+            _ringCapacity = ringCapacity;
         }
 
         #endregion
@@ -99,6 +94,8 @@ namespace Faster.Transport.Inproc
 
             // Start reading incoming messages
             _readerLoop = Task.Run(ReaderLoopAsync, _cts.Token);
+
+            OnConnected?.Invoke(this);
         }
 
         #endregion
@@ -112,6 +109,8 @@ namespace Faster.Transport.Inproc
         /// <param name="payload">The data to send.</param>
         public void Send(ReadOnlySpan<byte> payload)
         {
+            if (payload.Length == 0)
+                return;
             if (_isDisposed)
                 throw new ObjectDisposedException(nameof(InprocParticle));
             if (_link is null)
@@ -135,6 +134,11 @@ namespace Faster.Transport.Inproc
         /// </summary>
         public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
         {
+            if (payload.Length == 0)
+            {
+                return TaskCompat.CompletedValueTask;
+            }
+
             if (_isDisposed)
                 throw new ObjectDisposedException(nameof(InprocParticle));
             if (_link is null)
@@ -209,7 +213,19 @@ namespace Faster.Transport.Inproc
         public void Dispose()
         {
             Close();
-            _cts.Dispose();          
+            _cts.Dispose();
+        }
+
+        internal void Start()
+        {
+            // If this is the client side, connect immediately
+            if (!_isServer)
+            {
+                var link = InprocRegistry.Connect(_name, _ringCapacity);
+                AttachLink(link);
+            }
+
+            OnConnected?.Invoke(this);
         }
 
         #endregion

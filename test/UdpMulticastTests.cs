@@ -1,4 +1,5 @@
-﻿using Faster.Transport.Features.Udp;
+﻿using Faster.Transport.Contracts;
+using Faster.Transport;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -6,7 +7,6 @@ using System.Text;
 namespace Faster.Transport.Unittests;
 
 [CollectionDefinition("SequentialTests", DisableParallelization = true)]
-
 public class UdpParticleMulticastTests : IDisposable
 {
     private readonly TimeSpan _timeout = TimeSpan.FromSeconds(2);
@@ -18,37 +18,36 @@ public class UdpParticleMulticastTests : IDisposable
     public void Dispose() => _cts.Dispose();
 
     // ---------------------------------------------------------------------
-    // Multicast - Multiple receivers
+    // Multicast: Sender → Multiple Receivers
     // ---------------------------------------------------------------------
-
-    [Fact(DisplayName = "Multicast: Sender → Multiple Receivers (cross-platform reliable)")]
+    [Fact(DisplayName = "Multicast: Sender → Multiple Receivers (builder-based)")]
     public async Task Multicast_MultipleReceivers_CrossPlatform()
     {
         var group = IPAddress.Parse("239.0.0.123");
         var port = 9100;
+        var disableLoopback = !IsWindows; // disable loopback on Linux/mac
 
-        // ✅ On Windows: loopback must be enabled for local tests
-        var disableLoopback = !IsWindows; // keep disabled on Linux/mac
-
-        var recv1 = new UdpParticle(
-            new IPEndPoint(IPAddress.Any, port),
-            joinMulticast: group,
-            disableLoopback: disableLoopback);
-
-        var recv2 = new UdpParticle(
-            new IPEndPoint(IPAddress.Any, port),
-            joinMulticast: group,
-            disableLoopback: disableLoopback);
-
+        // ✅ Two receivers joining multicast group
         var recv1Tcs = new TaskCompletionSource<string>();
         var recv2Tcs = new TaskCompletionSource<string>();
 
-        recv1.OnReceived = (p, msg) => recv1Tcs.TrySetResult(Text(msg));
-        recv2.OnReceived = (p, msg) => recv2Tcs.TrySetResult(Text(msg));
+        var recv1 = new ParticleBuilder()
+            .UseMode(TransportMode.Udp)
+            .WithMulticast(group, port, disableLoopback: disableLoopback)
+            .OnReceived((p, msg) => recv1Tcs.TrySetResult(Text(msg)))
+            .Build();
 
-        var sender = new UdpParticle(
-            new IPEndPoint(IPAddress.Any, 0),
-            new IPEndPoint(group, port));
+        var recv2 = new ParticleBuilder()
+            .UseMode(TransportMode.Udp)
+            .WithMulticast(group, port, disableLoopback: disableLoopback)
+            .OnReceived((p, msg) => recv2Tcs.TrySetResult(Text(msg)))
+            .Build();
+
+        // ✅ Sender (unicast to group)
+        var sender = new ParticleBuilder()
+            .UseMode(TransportMode.Udp)
+            .WithMulticast(group, port, disableLoopback: disableLoopback)
+            .Build();
 
         await sender.SendAsync(Bytes("multicast-test"));
 
@@ -64,35 +63,32 @@ public class UdpParticleMulticastTests : IDisposable
     }
 
     // ---------------------------------------------------------------------
-    // Multicast loopback suppression
+    // Multicast: Loopback suppression
     // ---------------------------------------------------------------------
-
-    [Fact(DisplayName = "Multicast: Loopback disabled suppresses sender’s own packets")]
+    [Fact(DisplayName = "Multicast: Loopback disabled suppresses sender’s own packets (builder-based)")]
     public async Task Multicast_LoopbackDisabled_SenderDoesNotReceive()
     {
         var group = IPAddress.Parse("239.0.0.99");
         var port = 9200;
 
-        // ✅ Receiver with loopback enabled to ensure it gets data
-        var recv = new UdpParticle(
-            new IPEndPoint(IPAddress.Any, port),
-            joinMulticast: group,
-            disableLoopback: false);
-
+        // ✅ Receiver with loopback enabled
         var recvTcs = new TaskCompletionSource<string>();
-        recv.OnReceived = (p, msg) => recvTcs.TrySetResult(Text(msg));
+        var recv = new ParticleBuilder()
+            .UseMode(TransportMode.Udp)
+            .WithMulticast(group, port, disableLoopback: false)
+            .OnReceived((p, msg) => recvTcs.TrySetResult(Text(msg)))
+            .Build();
 
-        // ✅ Sender joins group but disables loopback (so it won't receive its own packets)
-        var sender = new UdpParticle(
-            localEndPoint: new IPEndPoint(IPAddress.Any, 0),
-            remoteEndPoint: new IPEndPoint(group, port),
-            joinMulticast: group,
-            disableLoopback: true);
-
+        // ✅ Sender joins group but disables loopback
         bool senderGotOwn = false;
-        sender.OnReceived = (p, msg) => senderGotOwn = true;
+        var sender = new ParticleBuilder()
+            .UseMode(TransportMode.Udp)
+            .WithMulticast(group, port, disableLoopback: true)
+            .OnReceived((p, msg) => senderGotOwn = true)
+            .Build();
 
         await sender.SendAsync(Bytes("loopback-test"));
+
         var received = await recvTcs.Task.WaitAsync(_timeout);
 
         Assert.Equal("loopback-test", received);
@@ -104,32 +100,36 @@ public class UdpParticleMulticastTests : IDisposable
     }
 
     // ---------------------------------------------------------------------
-    // Windows-only corner case test
+    // Windows-only test: Multiple multicast bindings (SO_REUSEADDR)
     // ---------------------------------------------------------------------
-
-    [Fact(DisplayName = "Windows: Verify multiple multicast bindings work (ReuseAddress)")]
+    [Fact(DisplayName = "Windows: Multiple multicast bindings work (ReuseAddress, builder-based)")]
     public async Task Multicast_Windows_MultipleSocketsReuseAddress()
     {
         if (!IsWindows)
-        {
             return; // Skip non-Windows platforms
-        }
 
         var group = IPAddress.Parse("239.0.0.111");
         var port = 9300;
 
-        var recv1 = new UdpParticle(new IPEndPoint(IPAddress.Any, port), joinMulticast: group, disableLoopback: false);
-        var recv2 = new UdpParticle(new IPEndPoint(IPAddress.Any, port), joinMulticast: group, disableLoopback: false);
-
         var recv1Tcs = new TaskCompletionSource<string>();
         var recv2Tcs = new TaskCompletionSource<string>();
 
-        recv1.OnReceived = (p, msg) => recv1Tcs.TrySetResult(Text(msg));
-        recv2.OnReceived = (p, msg) => recv2Tcs.TrySetResult(Text(msg));
+        var recv1 = new ParticleBuilder()
+            .UseMode(TransportMode.Udp)
+            .WithMulticast(group, port, disableLoopback: false)
+            .OnReceived((p, msg) => recv1Tcs.TrySetResult(Text(msg)))
+            .Build();
 
-        var sender = new UdpParticle(
-            new IPEndPoint(IPAddress.Any, 0),
-            new IPEndPoint(group, port));
+        var recv2 = new ParticleBuilder()
+            .UseMode(TransportMode.Udp)
+            .WithMulticast(group, port, disableLoopback: false)
+            .OnReceived((p, msg) => recv2Tcs.TrySetResult(Text(msg)))
+            .Build();
+
+        var sender = new ParticleBuilder()
+            .UseMode(TransportMode.Udp)
+            .WithMulticast(group, port, disableLoopback: false)
+            .Build();
 
         await sender.SendAsync(Bytes("reuse-test"));
 
