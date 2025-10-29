@@ -24,18 +24,18 @@ public class FasterIpcBenchmark
         // Create the server
         const string Base = "FasterIpcDemo";
         var mre = new ManualResetEvent(false);
-        var server = new MappedReactor(Base);
-        server.OnConnected += id =>
+       _server = new MappedReactor(Base);
+        _server.OnConnected += id =>
         {
             mre.Set();
            // Console.WriteLine($"[SERVER] Client {id:X16} connected");
         };
-        server.OnReceived += (particle, mem) =>
+        _server.OnReceived += (particle, mem) =>
         {
            // Console.WriteLine($"[SERVER] <- {id:X16}: {msg}");
             particle.Send(mem.Span);
         };
-        server.Start();
+        _server.Start();
 
         _client = new MappedParticle(Base, 0xA1UL);
 
@@ -72,7 +72,7 @@ public class FasterIpcBenchmark
     public async Task SendAsync_10K()
     {
         for (int i = 0; i < 10_000; i++)
-            _client.Send(_payload);
+            await _client.SendAsync(_payload);
 
         await _tcs.Task;
     }

@@ -52,7 +52,7 @@ namespace Faster.Transport.Ipc
         /// making them visible across Windows sessions. Otherwise, "Local\\" is used.
         /// </param>
         /// <param name="ringBytes">Size of each client’s shared memory ring buffer (default: ~1 MB).</param>
-        public MappedReactor(string baseName, bool global = false, int ringBytes = (128 + (1 << 20)))
+        public MappedReactor(string baseName, bool global = false, int ringBytes = 128 + (1 << 20))
         {
             _ns = global ? "Global\\" : "Local\\";
             _base = baseName;

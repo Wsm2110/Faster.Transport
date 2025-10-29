@@ -22,7 +22,7 @@
     <Company>Faster Framework</Company>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>Faster.Transport</PackageId>
-    <Version>0.0.12</Version>
+    <Version>0.0.14</Version>
     <Authors>Wiljan Ruizendaal</Authors>
     <RepositoryUrl>https://github.com/Wsm2110/Faster.Transport</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Wsm2110/Faster.Transport</PackageProjectUrl>

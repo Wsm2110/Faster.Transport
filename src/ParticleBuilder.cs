@@ -26,7 +26,7 @@ namespace Faster.Transport
         // Performance & resource options
         private int _bufferSize = 8192;
         private int _parallelism = 8;
-        private int _ringCapacity = 1 << 20; // 1 MiB
+        private int _ringCapacity = 128 + (1 << 20); // 1 MiB
 
         // UDP options
         private bool _allowBroadcast;

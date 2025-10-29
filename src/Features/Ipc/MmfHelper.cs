@@ -1,6 +1,8 @@
 using System;
+using System.ComponentModel;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Threading;
@@ -19,6 +21,18 @@ namespace Faster.Transport.Ipc
     /// </remarks>
     internal static class MmfHelper
     {
+
+        // Fix 4: If you need security on Windows with .NET 5+, use P/Invoke
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr CreateFileMapping(
+            IntPtr hFile,
+            IntPtr lpFileMappingAttributes,
+            uint flProtect,
+            uint dwMaximumSizeHigh,
+            uint dwMaximumSizeLow,
+            string lpName);
+
         /// <summary>
         /// Creates or opens a memory-mapped file (MMF) with read/write access and proper sharing configuration.
         /// </summary>
@@ -36,17 +50,26 @@ namespace Faster.Transport.Ipc
         /// </list>
         /// </para>
         /// </remarks>
-        public static MemoryMappedFile CreateWithSecurity(string name, long size)
+        public static MemoryMappedFile CreateWithSecurity(string name, long capacity)
         {
-            // CreateOrOpen ensures that if another process already created the MMF, 
-            // we simply attach to it instead of throwing an exception.
-            return MemoryMappedFile.CreateOrOpen(
-                name,
-                size,
-                MemoryMappedFileAccess.ReadWrite,
-                MemoryMappedFileOptions.None,
-                HandleInheritability.None);
+            const uint PAGE_READWRITE = 0x04;
+            const uint SEC_COMMIT = 0x8000000;
+
+            IntPtr handle = CreateFileMapping(
+                new IntPtr(-1),  // INVALID_HANDLE_VALUE
+                IntPtr.Zero,     // default security
+                PAGE_READWRITE | SEC_COMMIT,
+                (uint)(capacity >> 32),
+                (uint)(capacity & 0xFFFFFFFF),
+                name
+            );
+
+            if (handle == IntPtr.Zero)
+                throw new Win32Exception();
+
+            return MemoryMappedFile.CreateOrOpen(name, capacity, MemoryMappedFileAccess.ReadWrite);
         }
+          
 
         /// <summary>
         /// Tries to open an existing memory-mapped file (MMF), retrying several times if it's not yet available.
@@ -64,7 +87,7 @@ namespace Faster.Transport.Ipc
         /// This method is useful when the client starts slightly before the server has finished 
         /// creating the shared memory region.
         /// </remarks>
-        public static MemoryMappedFile OpenExistingWithRetry(string name, int tries = 200, int delayMs = 5)
+        public static MemoryMappedFile OpenExistingWithRetry(string name, int tries = 100, int delayMs = 5)
         {
             for (int i = 0; i < tries; i++)
             {
@@ -76,7 +99,7 @@ namespace Faster.Transport.Ipc
                 catch (FileNotFoundException)
                 {
                     // If not yet created, wait a bit and try again
-                    Thread.Sleep(delayMs);
+                    Thread.Sleep(100);
                 }
             }
 

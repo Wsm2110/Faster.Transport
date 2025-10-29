@@ -8,7 +8,7 @@ namespace BenchmarkSuite1
     {
         public static void Main(string[] args)
         {
-           BenchmarkRunner.Run<TcpSocketSendAsyncBenchmark>(new DebugInProcessConfig());
+           BenchmarkRunner.Run<FasterIpcBenchmark>(new DebugInProcessConfig());
             Console.ReadLine();
         }
     }

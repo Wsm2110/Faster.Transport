@@ -2,8 +2,8 @@
 using System.Text;
 using Faster.Transport.Contracts;
 
-namespace Faster.Transport.Unittests
-{
+namespace Faster.Transport.Unittests;
+
     public sealed class IpcBuilderTests
     {
         private static string NewChannel() => $"FasterIpc_{Guid.NewGuid():N}";
@@ -143,6 +143,83 @@ namespace Faster.Transport.Unittests
             {
                 server.Dispose();
             }
-        }  
+        }
+
+    [Fact]
+    public void MultipleClients_send_individually_and_do_not_receive_others()
+    {
+        var channel = NewChannel();
+        var serverReceived = new ConcurrentQueue<(IParticle From, byte[] Payload)>();
+
+        // --- Server setup ---
+        IParticle server = new ParticleBuilder()
+            .UseMode(TransportMode.Ipc)
+            .WithChannel(channel, isServer: true)
+            .OnReceived((p, data) =>
+            {
+                var arr = data.ToArray();
+                serverReceived.Enqueue((p, arr));
+                // Echo back only to the sender
+                p.Send(arr);
+            })
+            .Build();
+
+        try
+        {
+            // --- Clients setup ---
+            var clientAReceived = new ConcurrentQueue<byte[]>();
+            var clientBReceived = new ConcurrentQueue<byte[]>();
+
+            IParticle clientA = new ParticleBuilder()
+                .UseMode(TransportMode.Ipc)
+                .WithChannel(channel)
+                .OnReceived((_, data) => clientAReceived.Enqueue(data.ToArray()))
+                .Build();
+
+            IParticle clientB = new ParticleBuilder()
+                .UseMode(TransportMode.Ipc)
+                .WithChannel(channel)
+                .OnReceived((_, data) => clientBReceived.Enqueue(data.ToArray()))
+                .Build();
+
+            try
+            {
+                // Wait until both are connected
+                Assert.True(WaitUntil(() => serverReceived.Count >= 0, TimeSpan.FromSeconds(2)));
+
+                var payloadA = Bytes("from-A");
+                var payloadB = Bytes("from-B");
+
+                // Each client sends its own payload
+                clientA.Send(payloadA);
+                clientB.Send(payloadB);
+
+                // Server should see two distinct messages
+                Assert.True(WaitUntil(() => serverReceived.Count == 2, TimeSpan.FromSeconds(2)), "Server did not receive both messages");
+
+                // Clients should each get only their own echo
+                Assert.True(WaitUntil(() => clientAReceived.Count == 1, TimeSpan.FromSeconds(2)), "Client A did not receive echo");
+                Assert.True(WaitUntil(() => clientBReceived.Count == 1, TimeSpan.FromSeconds(2)), "Client B did not receive echo");
+
+                Assert.True(clientAReceived.TryDequeue(out var echoA));
+                Assert.True(clientBReceived.TryDequeue(out var echoB));
+
+                Assert.Equal(payloadA, echoA);
+                Assert.Equal(payloadB, echoB);
+
+                // Ensure no cross-messages (no contamination)
+                Assert.Empty(clientAReceived);
+                Assert.Empty(clientBReceived);
+            }
+            finally
+            {
+                clientA.Dispose();
+                clientB.Dispose();
+            }
+        }
+        finally
+        {
+            server.Dispose();
+        }
     }
 }
