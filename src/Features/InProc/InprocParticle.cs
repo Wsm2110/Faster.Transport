@@ -1,233 +1,228 @@
 ﻿using Faster.Transport.Contracts;
 using Faster.Transport.Primitives;
 using System;
-using System.Xml.Linq;
+using System.Drawing;
 
-namespace Faster.Transport.Inproc
+namespace Faster.Transport.Inproc;
+
+/// <summary>
+/// In-process particle optimized for extreme performance.
+/// - No per-message allocs
+/// - Dedicated RX thread with batched draining
+/// - Fixed back-buffer ring to avoid overwrite
+/// </summary>
+public sealed class InprocParticle : IParticle, IDisposable
 {
-    /// <summary>
-    /// Represents a single in-process transport endpoint ("particle").
-    /// 
-    /// ✅ Think of this as a lightweight connection between two endpoints
-    /// that live **inside the same process** — no TCP or file I/O involved.
-    /// 
-    /// Each <see cref="InprocParticle"/> has two unidirectional message rings:
-    /// - `ToServer`  → messages from client to server
-    /// - `ToClient`  → messages from server to client
-    /// 
-    /// The class automatically starts a reader loop that listens for messages
-    /// from its linked peer and raises <see cref="OnReceived"/> events.
-    /// 
-    /// This mirrors how `MappedParticle` or `PipeParticle` work — but it's
-    /// entirely in-memory and designed for **extreme speed** and low latency.
-    /// </summary>
-    public sealed class InprocParticle : IParticle, IDisposable
+    #region Fields
+
+    private readonly string _name;
+    private readonly bool _isServer;
+    private readonly int _ringCapacity;
+
+    private InprocLink? _link;
+
+    // RX thread
+    private Thread? _rxThread;
+    private volatile bool _running;
+
+    // Fixed back-buffer ring (avoids ArrayPool churn & reuse hazards)
+    private readonly byte[][] _buffers;
+    private int _bufIndex;
+
+    // Tunables
+    private readonly int _bufSize;
+    private readonly int _bufferCount;
+    private readonly int _batchMax;
+
+    private volatile bool _isDisposed;
+
+    #endregion
+
+    #region Events
+
+    public Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
+    public Action<IParticle>? OnDisconnected { get; set; }
+    public Action<IParticle>? OnConnected { get; set; }
+
+    #endregion
+
+    #region Ctor
+
+    public InprocParticle(
+        string name,
+        bool isServer,
+        int ringCapacity = 4096,
+        int backBufferCount = 8,
+        int bufferSize = 64 * 1024,
+        int batchMax = 32,
+        ThreadPriority rxThreadPriority = ThreadPriority.Highest)
     {
-        #region Fields
+        if (backBufferCount < 2) backBufferCount = 2;
 
-        private readonly string _name;
-        private readonly bool _isServer;
-        private readonly int _ringCapacity;
-        private readonly CancellationTokenSource _cts = new();
+        _name = name ?? throw new ArgumentNullException(nameof(name));
+        _isServer = isServer;
+        _ringCapacity = ringCapacity;
 
-        // Represents the bidirectional link between this particle and its peer
-        private InprocLink? _link;
+        _bufferCount = backBufferCount;
+        _bufSize = bufferSize;
+        _batchMax = batchMax;
 
-        // Background reader task
-        private Task? _readerLoop;
+        _buffers = new byte[_bufferCount][];
+        for (int i = 0; i < _bufferCount; i++)
+            _buffers[i] = new byte[_bufSize];
 
-        private volatile bool _isDisposed;
-
-        #endregion
-
-        #region Events
-
-        /// <summary>
-        /// Triggered whenever a message is received from the connected peer.
-        /// </summary>
-        public Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
-
-        /// <summary>
-        /// Triggered when the connection is closed or an error occurs.
-        /// </summary>
-        public Action<IParticle>? OnDisconnected { get; set; }
-
-        /// <summary>
-        /// Triggered once the server and client are connected and ready.
-        /// </summary>
-        public Action<IParticle>? OnConnected { get; set; }
-
-
-        #endregion
-
-        #region Constructor
-
-        /// <summary>
-        /// Creates a new in-process particle endpoint.
-        /// </summary>
-        /// <param name="name">Channel name (must match between both ends).</param>
-        /// <param name="isServer">True if this particle is the server side.</param>
-        /// <param name="bufferSize">Size of each buffer chunk (default: 8 KB).</param>
-        /// <param name="ringCapacity">Capacity of the in-memory message ring.</param>
-        /// <param name="maxDegreeOfParallelism">Number of concurrent Send() operations allowed.</param>
-        public InprocParticle(string name, bool isServer, int bufferSize = 8192, int ringCapacity = 4096, int maxDegreeOfParallelism = 8)
+        _rxThread = new Thread(ReceiveLoop)
         {
-            _name = name ?? throw new ArgumentNullException(nameof(name));
-            _isServer = isServer;
-            _ringCapacity = ringCapacity;
+            IsBackground = true,
+            Name = $"{(_isServer ? "inproc-srv" : "inproc-cli")}-rx:{_name}",
+            Priority = rxThreadPriority
+        };
+    }
+
+    #endregion
+
+    #region Link
+
+    internal void AttachLink(InprocLink link)
+    {
+        if (_isDisposed) throw new ObjectDisposedException(nameof(InprocParticle));
+        _link = link ?? throw new ArgumentNullException(nameof(link));
+        StartRx();
+        OnConnected?.Invoke(this);
+    }
+
+    #endregion
+
+    #region Start/Stop
+
+    public void Start()
+    {
+        if (_isDisposed) throw new ObjectDisposedException(nameof(InprocParticle));
+
+        if (!_isServer)
+        {
+            var link = InprocRegistry.Connect(_name, _ringCapacity);
+            _link = link;
         }
 
-        #endregion
+        StartRx();
+        OnConnected?.Invoke(this);
+    }
 
-        #region Connection setup
+    private void StartRx()
+    {
+        if (_running) return;
+        _running = true;
+        _rxThread?.Start();
+    }
 
-        /// <summary>
-        /// Attaches an existing in-process link (used by server side).
-        /// This also starts the background reader loop.
-        /// </summary>
-        internal void AttachLink(InprocLink link)
+    #endregion
+
+    #region Send
+
+    public void Send(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length == 0) return;
+        if (_isDisposed) throw new ObjectDisposedException(nameof(InprocParticle));
+        var link = _link ?? throw new InvalidOperationException("Not connected.");
+
+        var ring = _isServer ? link.ToClient : link.ToServer;
+
+        int spinExp = 1;
+     
+        // TODO fix allocation...
+        while (!ring.TryEnqueue(payload.ToArray()))
         {
-            if (_isDisposed)
-                throw new ObjectDisposedException(nameof(InprocParticle));
-
-            _link = link ?? throw new ArgumentNullException(nameof(link));
-
-            // Start reading incoming messages
-            _readerLoop = Task.Run(ReaderLoopAsync, _cts.Token);
-
-            OnConnected?.Invoke(this);
-        }
-
-        #endregion
-
-        #region Send methods
-
-        /// <summary>
-        /// Sends a message synchronously to the connected peer.
-        /// The message is copied into the peer’s inbound ring.
-        /// </summary>
-        /// <param name="payload">The data to send.</param>
-        public void Send(ReadOnlySpan<byte> payload)
-        {
-            if (payload.Length == 0)
-                return;
-            if (_isDisposed)
-                throw new ObjectDisposedException(nameof(InprocParticle));
-            if (_link is null)
-                throw new InvalidOperationException("Not connected.");
-
-            // Select which direction to send based on role
-            var ring = _isServer ? _link.ToClient : _link.ToServer;
-            var spin = new SpinWait();
-
-            // Apply backpressure: if ring is full, spin until it has space
-            while (!ring.TryEnqueue(payload.ToArray()))
+            Thread.SpinWait(spinExp);
+            if (spinExp < (1 << 12))
             {
-                spin.SpinOnce(); // adaptive spinning avoids busy waiting
-                if (_cts.IsCancellationRequested)
-                    throw new OperationCanceledException("Send operation canceled.");
+                spinExp <<= 1;
             }
         }
+    }
 
-        /// <summary>
-        /// Sends a message asynchronously (still synchronous under the hood for speed).
-        /// </summary>
-        public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
+    public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
+    {
+        Send(payload.Span);
+        return TaskCompat.CompletedValueTask;
+    }
+
+    #endregion
+
+    #region RX loop
+
+    private void ReceiveLoop()
+    {
+        try
         {
-            if (payload.Length == 0)
+            var link = _link;
+            while (link is null && _running)
             {
-                return TaskCompat.CompletedValueTask;
+                link = _link;
+                Thread.SpinWait(64);
             }
+            if (link is null) return;
 
-            if (_isDisposed)
-                throw new ObjectDisposedException(nameof(InprocParticle));
-            if (_link is null)
-                throw new InvalidOperationException("Not connected.");
+            var inbound = _isServer ? link.ToServer : link.ToClient;
+            int spinExp = 1;
 
-            var ring = _isServer ? _link.ToClient : _link.ToServer;
-            var spin = new SpinWait();
-
-            // Same logic as Send() but with ReadOnlyMemory<byte>
-            while (!ring.TryEnqueue(payload))
+            while (_running)
             {
-                spin.SpinOnce();
-                if (_cts.IsCancellationRequested)
-                    throw new OperationCanceledException("Send operation canceled.");
-            }
+                int delivered = 0;
 
-            return TaskCompat.CompletedValueTask;
-        }
-
-        #endregion
-
-        #region Reader loop
-
-        /// <summary>
-        /// Continuously reads messages from the inbound ring and raises <see cref="OnReceived"/>.
-        /// </summary>
-        private async Task ReaderLoopAsync()
-        {
-            try
-            {
-                var link = _link!;
-                var inbound = _isServer ? link.ToServer : link.ToClient;
-
-                while (!_cts.IsCancellationRequested)
+                while (delivered < _batchMax)
                 {
-                    // Drain all available messages before yielding
-                    while (inbound.TryDequeue(out var msg))
-                    {
-                        OnReceived?.Invoke(this, msg);
-                    }
+                    var idx = _bufIndex;
+                    _bufIndex = (idx + 1) % _bufferCount;
+                    var buf = _buffers[idx];
 
-                    // Yield to let other tasks run — prevents busy CPU loop
-                    await Task.Yield();
+                    if (!inbound.TryDequeue(out var payload))
+                        break;
+
+                    OnReceived?.Invoke(this, payload);
+                    delivered++;
                 }
-            }
-            catch (Exception ex)
-            {
-                Close(ex);
+
+                if (delivered > 0)
+                {
+                    spinExp = 1;
+                    continue;
+                }
+
+                Thread.SpinWait(spinExp);
+                if (spinExp < (1 << 12)) spinExp <<= 1;
             }
         }
-
-        #endregion
-
-        #region Cleanup and disposal
-
-        /// <summary>
-        /// Gracefully closes the connection and raises disconnect events.
-        /// </summary>
-        private void Close(Exception? ex = null)
+        catch
         {
-            if (_isDisposed) return;
-            _isDisposed = true;
-
-            try { _cts.Cancel(); } catch { }
-
+            // keep teardown minimal
+        }
+        finally
+        {
             try { OnDisconnected?.Invoke(this); } catch { }
         }
-
-        /// <summary>
-        /// Disposes all resources and stops background tasks.
-        /// </summary>
-        public void Dispose()
-        {
-            Close();
-            _cts.Dispose();
-        }
-
-        internal void Start()
-        {
-            // If this is the client side, connect immediately
-            if (!_isServer)
-            {
-                var link = InprocRegistry.Connect(_name, _ringCapacity);
-                AttachLink(link);
-            }
-
-            OnConnected?.Invoke(this);
-        }
-
-        #endregion
     }
+
+    #endregion
+
+    #region Dispose
+
+    public void Dispose()
+    {
+        if (_isDisposed) return;
+        _isDisposed = true;
+
+        _running = false;
+
+        if (_rxThread is not null && _rxThread.IsAlive)
+        {
+            if (!_rxThread.Join(TimeSpan.FromMilliseconds(200)))
+                _rxThread.Interrupt();
+        }
+
+        _rxThread = null;
+        _link = null;
+    }
+
+    #endregion
 }

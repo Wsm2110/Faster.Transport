@@ -8,7 +8,7 @@ namespace BenchmarkSuite1
     {
         public static void Main(string[] args)
         {
-           BenchmarkRunner.Run<FasterIpcBenchmark>(new DebugInProcessConfig());
+           BenchmarkRunner.Run<FasterInprocBenchmark>(new DebugInProcessConfig());
             Console.ReadLine();
         }
     }

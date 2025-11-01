@@ -37,7 +37,9 @@ public class FasterInprocBenchmark
             {
                 _tcs.SetResult(true);
             }
-        }; 
+        };
+
+        _client.Start();
 
         Task.Delay(100).Wait(); // wait for setup
     }
