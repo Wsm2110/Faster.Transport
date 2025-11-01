@@ -142,12 +142,12 @@ namespace Faster.Transport.Ipc
                 _clients[id] = particle;
 
                 particle.Start();
-                FasterIpcTrace.Info($"[Server] Client {id:X16} connected");
+              //  FasterIpcTrace.Info($"[Server] Client {id:X16} connected");
                 OnConnected?.Invoke(id);
             }
             catch (Exception ex)
             {
-                FasterIpcTrace.Warn($"[Server] Attach failed for {id:X16}: {ex.Message}");
+             //   FasterIpcTrace.Warn($"[Server] Attach failed for {id:X16}: {ex.Message}");
             }
         }
 

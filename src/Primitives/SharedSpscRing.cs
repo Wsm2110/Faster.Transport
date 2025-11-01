@@ -18,15 +18,11 @@ namespace Faster.Transport.Primitives
         private readonly byte* _base;
         private readonly int _dataCap; // power-of-two
         private readonly int _mask;    // _dataCap - 1
-
-
         private byte* Data => _base + 128;
-
-  
         private ref int Head => ref Unsafe.AsRef<int>(_base + 0);
-
-      
         private ref int Tail => ref Unsafe.AsRef<int>(_base + 64);
+        private static int VRead(ref int loc) => Volatile.Read(ref loc);
+        private static void VWrite(ref int loc, int val) => Volatile.Write(ref loc, val);
 
         public SharedSpscRing(byte* basePtr, int totalBytes)
         {
@@ -42,27 +38,23 @@ namespace Faster.Transport.Primitives
             _mask = dataCap - 1;
         }
 
-        // Volatile helpers
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int VRead(ref int loc) => Volatile.Read(ref loc);
+        // -------- Internal copy helpers (wrap-safe) --------
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void VWrite(ref int loc, int val) => Volatile.Write(ref loc, val);
-
-        // -------- Core I/O (safe wrap handling, no overflow on pos+len) --------
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void WriteBytes(int pos, ReadOnlySpan<byte> src)
         {
             int len = src.Length;
             if (len == 0) return;
+            int room = _dataCap - pos; // contiguous bytes to end
 
-            int room = _dataCap - pos;                 // contiguous bytes to end
             if (len <= room)
             {
+                // contiguous
                 src.CopyTo(new Span<byte>(Data + pos, len));
             }
             else
             {
+                // wrapped
                 src[..room].CopyTo(new Span<byte>(Data + pos, room));
                 src[room..].CopyTo(new Span<byte>(Data, len - room));
             }
@@ -73,8 +65,8 @@ namespace Faster.Transport.Primitives
         {
             int len = dst.Length;
             if (len == 0) return;
-
             int room = _dataCap - pos;
+
             if (len <= room)
             {
                 new ReadOnlySpan<byte>(Data + pos, len).CopyTo(dst);
@@ -103,7 +95,7 @@ namespace Faster.Transport.Primitives
 
             int need = 4 + len;
 
-            // Snapshot cursors (masked values)
+            // Snapshot cursors (masked)
             int head = VRead(ref Head);
             int tail = VRead(ref Tail);
 
@@ -115,10 +107,28 @@ namespace Faster.Transport.Primitives
 
             int pos = tail;
 
-            // Write header
-            Span<byte> hdr = stackalloc byte[4];
-            BinaryPrimitives.WriteInt32LittleEndian(hdr, len);
-            WriteBytes(pos, hdr);
+            // Fast header write if contiguous
+            int room = _dataCap - pos;
+            if (room >= 4)
+            {
+                // write little-endian int32 directly
+                if (BitConverter.IsLittleEndian)
+                {
+                    Unsafe.WriteUnaligned(ref Unsafe.AsRef<byte>(Data + pos), len);
+                }
+                else
+                {
+                    int rev = BinaryPrimitives.ReverseEndianness(len);
+                    Unsafe.WriteUnaligned(ref Unsafe.AsRef<byte>(Data + pos), rev);
+                }
+            }
+            else
+            {
+                // wrapped header: rare path, use small stack hdr
+                Span<byte> hdr = stackalloc byte[4];
+                BinaryPrimitives.WriteInt32LittleEndian(hdr, len);
+                WriteBytes(pos, hdr);
+            }
 
             // Write payload
             pos = (pos + 4) & _mask;
@@ -142,16 +152,26 @@ namespace Faster.Transport.Primitives
             int tail = VRead(ref Tail);
             int avail = (tail - head) & _mask;
             if (avail == 0) return false; // empty
+            if (avail < 4) return false;  // header not fully published
 
             int pos = head;
 
-            // Read header if at least 4 bytes available
-            if (avail < 4) return false; // not yet fully published header
-            Span<byte> hdr = stackalloc byte[4];
-            ReadBytes(pos, hdr);
-            int payloadLen = BinaryPrimitives.ReadInt32LittleEndian(hdr);
+            // Fast header read if contiguous
+            int payloadLen;
+            int room = _dataCap - pos;
+            if (room >= 4)
+            {
+                int raw = Unsafe.ReadUnaligned<int>(ref Unsafe.AsRef<byte>(Data + pos));
+                payloadLen = BitConverter.IsLittleEndian ? raw : BinaryPrimitives.ReverseEndianness(raw);
+            }
+            else
+            {
+                Span<byte> hdr = stackalloc byte[4];
+                ReadBytes(pos, hdr);
+                payloadLen = BinaryPrimitives.ReadInt32LittleEndian(hdr);
+            }
 
-            // Validate header
+            // Validate header & capacity
             if ((uint)payloadLen > (uint)(_dataCap - 5)) return false; // invalid/corrupt
             if (payloadLen > dst.Length) return false;
 
@@ -170,5 +190,84 @@ namespace Faster.Transport.Primitives
             len = payloadLen;
             return true;
         }
+
+        /// <summary>
+        /// Zero-copy dequeue: returns up to two spans into the shared memory (handles wrap-around) and total length.
+        /// Returns false if empty or not fully published.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool TryDequeue(out ReadOnlySpan<byte> span1, out ReadOnlySpan<byte> span2, out int len)
+        {
+            span1 = default;
+            span2 = default;
+            len = 0;
+
+            int head = VRead(ref Head);
+            int tail = VRead(ref Tail);
+            int avail = (tail - head) & _mask;
+            if (avail < 4) return false;
+
+            int pos = head;
+            int room = _dataCap - pos;
+
+            // Header read
+            int payloadLen;
+            if (room >= 4)
+            {
+                int raw = Unsafe.ReadUnaligned<int>(ref Unsafe.AsRef<byte>(Data + pos));
+                payloadLen = BitConverter.IsLittleEndian ? raw : BinaryPrimitives.ReverseEndianness(raw);
+            }
+            else
+            {
+                Span<byte> hdr = stackalloc byte[4];
+                ReadBytes(pos, hdr);
+                payloadLen = BinaryPrimitives.ReadInt32LittleEndian(hdr);
+            }
+
+            if ((uint)payloadLen > (uint)(_dataCap - 5)) return false;
+            int need = 4 + payloadLen;
+            if (avail < need) return false;
+
+            // Payload spans
+            len = payloadLen;
+            if (payloadLen == 0)
+            {
+                // advance & return
+                VWrite(ref Head, (head + 4) & _mask);
+                return true;
+            }
+
+            int ppos = (pos + 4) & _mask;
+            int proom = _dataCap - ppos;
+
+            if (payloadLen <= proom)
+            {
+                span1 = new ReadOnlySpan<byte>(Data + ppos, payloadLen);
+                span2 = default;
+            }
+            else
+            {
+                span1 = new ReadOnlySpan<byte>(Data + ppos, proom);
+                span2 = new ReadOnlySpan<byte>(Data, payloadLen - proom);
+            }
+
+            VWrite(ref Head, (head + need) & _mask);
+            return true;
+        }
+
+        // --------------------------- Optional helpers ---------------------------
+
+        public int CapacityBytes => _dataCap;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int UsedBytes()
+        {
+            int head = VRead(ref Head);
+            int tail = VRead(ref Tail);
+            return (tail - head) & _mask;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int FreeBytes() => _dataCap - 1 - UsedBytes(); // 1 byte reserved
     }
 }

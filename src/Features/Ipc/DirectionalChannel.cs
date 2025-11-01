@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Buffers;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -8,62 +7,36 @@ using Faster.Transport.Primitives;
 namespace Faster.Transport.Ipc
 {
     /// <summary>
-    /// Represents one half of an inter-process communication (IPC) channel using shared memory.
+    /// Ultra-fast SPSC MMF channel with fixed back-buffer ring and batched receive.
+    /// Keeps API: OnFrame(ReadOnlyMemory<byte>).
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A <see cref="DirectionalChannel"/> is either a **sender** (writer) or a **receiver** (reader).
-    /// It wraps a memory-mapped file containing a <see cref="SharedSpscRing"/> buffer,
-    /// providing ultra-fast, lock-free, single-producer single-consumer message transfer between processes.
-    /// </para>
-    /// <para>
-    /// Optionally, it can use an <see cref="EventWaitHandle"/> to signal new data,
-    /// though by default it relies on a lightweight spin-wait loop for performance.
-    /// </para>
-    /// <example>
-    /// Client (sender) → Server (reader):
-    /// <code>
-    /// var tx = new DirectionalChannel("Local\\MyApp.C2S", null, 1&lt;&lt;20, create: true, isReader: false);
-    /// var rx = new DirectionalChannel("Local\\MyApp.C2S", null, 1&lt;&lt;20, create: false, isReader: true);
-    /// 
-    /// rx.OnFrame += msg =&gt; Console.WriteLine($"Received: {msg.Length} bytes");
-    /// rx.Start();
-    /// 
-    /// tx.Send(Encoding.UTF8.GetBytes("Hello from client"));
-    /// </code>
-    /// </example>
-    /// </remarks>
     public unsafe sealed class DirectionalChannel : IDisposable
     {
+        private const int HeaderBytes = 128;      // 0..63: head padding, 64..127: tail padding
+        private const int BatchMax = 32;        // messages per loop iteration before re-checking _running
+
         private readonly MemoryMappedFile _mmf;
         private readonly MemoryMappedViewAccessor _view;
         private readonly EventWaitHandle? _signal;
-        private readonly bool _reader;    
+        private readonly bool _reader;
         private readonly SharedSpscRing _ring;
-        private readonly byte[] _recv;
+
+        // Fixed ring of back-buffers; avoids ArrayPool churn and reuse hazards
+        private readonly byte[][] _buffers;
+        private int _bufIndex; // next buffer slot
+
         private readonly Thread? _rxThread;
         private volatile bool _running;
 
-        public int Length { get; private set; }
+        // Derived limits
+        public int Length { get; }
+        private readonly int _maxPayload; // totalBytes - header - 5
 
-        /// <summary>
-        /// Raised when a complete message frame is received.
-        /// </summary>
+        /// <summary>Raised when a complete message frame is received.</summary>
         public event Action<ReadOnlyMemory<byte>>? OnFrame;
 
-        /// <summary>
-        /// Creates a new <see cref="DirectionalChannel"/> over a memory-mapped file.
-        /// </summary>
-        /// <param name="mapName">The unique name of the shared memory region (e.g. "Global\\App.C2S.1234.map").</param>
-        /// <param name="evName">Optional name of the associated event signal (if used).</param>
-        /// <param name="totalBytes">Total size (in bytes) of the shared memory buffer, including header + ring.</param>
-        /// <param name="create">
-        /// Set to <see langword="true"/> to create the shared memory file,
-        /// or <see langword="false"/> to attach to an existing one.
-        /// </param>
-        /// <param name="isReader">If <see langword="true"/>, this instance will read messages; otherwise, it writes them.</param>
-        /// <param name="rxThreadName">Optional name for the background receiver thread.</param>
-        /// <param name="useEvent">If <see langword="true"/>, uses a system event to signal new messages.</param>
+        /// <param name="backBufferCount">How many back buffers to rotate (default 8). Increase if consumer is slower.</param>
+        /// <param name="rxThreadPriority">RX thread priority (default Highest). Use Normal if you prefer.</param>
         public DirectionalChannel(
             string mapName,
             string? evName,
@@ -71,44 +44,53 @@ namespace Faster.Transport.Ipc
             bool create,
             bool isReader,
             string? rxThreadName = null,
-            bool useEvent = false)
+            bool useEvent = false,
+            int backBufferCount = 8,
+            ThreadPriority rxThreadPriority = ThreadPriority.Highest)
         {
+            if (backBufferCount < 2) backBufferCount = 2;
+
             _reader = isReader;
             Length = totalBytes;
 
-            // Create or attach to the shared memory region
+            // Real max payload the ring can ever accept: (dataCap - 5)
+            // dataCap = totalBytes - 128
+            _maxPayload = Math.Max(0, totalBytes - HeaderBytes - 5);
+
             _mmf = create
                 ? MmfHelper.CreateWithSecurity(mapName, totalBytes)
                 : MmfHelper.OpenExistingWithRetry(mapName);
 
-            // Optional synchronization signal
             _signal = useEvent && evName != null
-                ? (create
-                    ? MmfHelper.CreateOrOpenEvent(evName)
-                    : MmfHelper.OpenEventWithRetry(evName))
+                ? (create ? MmfHelper.CreateOrOpenEvent(evName)
+                          : MmfHelper.OpenEventWithRetry(evName))
                 : null;
 
-            // Create a view into the shared memory for direct access
             _view = _mmf.CreateViewAccessor(0, totalBytes, MemoryMappedFileAccess.ReadWrite);
 
-            // Obtain the raw pointer to the shared region
             byte* p = null;
             _view.SafeMemoryMappedViewHandle.AcquirePointer(ref p);
 
-            // Initialize the lock-free single-producer/single-consumer ring
             _ring = new SharedSpscRing(p, totalBytes);
 
-            // Rent a reusable buffer to hold incoming data (avoid per-message allocations)
-            _recv = ArrayPool<byte>.Shared.Rent(Math.Max(1 << 16, totalBytes));
+            // Pre-allocate fixed back buffers sized to max payload (keep <85KB if you want to avoid LOH).
+            // If your messages can be larger than ~64KB often, set totalBytes accordingly at construction time.
+            int bufSize = Math.Max(64 * 1024, _maxPayload); // minimum 64KiB, or up to max payload
+            _buffers = new byte[backBufferCount][];
+            for (int i = 0; i < backBufferCount; i++)
+                _buffers[i] = new byte[bufSize];
 
-            // If this is a reader, start a dedicated receive thread
             if (_reader)
-                _rxThread = new Thread(ReceiveLoop) { IsBackground = true, Name = rxThreadName ?? "mmf-rx" };
+            {
+                _rxThread = new Thread(ReceiveLoop)
+                {
+                    IsBackground = true,
+                    Name = rxThreadName ?? "mmf-rx",
+                    Priority = rxThreadPriority
+                };
+            }
         }
 
-        /// <summary>
-        /// Starts the background receiver thread (only applies to reader channels).
-        /// </summary>
         public void Start()
         {
             if (_reader && _rxThread is not null)
@@ -118,84 +100,79 @@ namespace Faster.Transport.Ipc
             }
         }
 
-        /// <summary>
-        /// Background loop that continuously polls the ring buffer for new messages.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private ref byte[] NextBuffer()
+        {
+            var idx = _bufIndex;
+            _bufIndex = (idx + 1) % _buffers.Length;
+            return ref _buffers[idx];
+        }
+
         private void ReceiveLoop()
         {
-            FasterIpcTrace.Info("[Directional] RX start");
-            var spin = new SpinWait();
-
+            var spinExp = 1; // exponential spin budget
             while (_running)
             {
-                // Try to dequeue a frame from the shared memory ring
-                if (_ring.TryDequeue(_recv, out int len))
-                {
-                    // Fire the OnFrame event to deliver the received message
-                    OnFrame?.Invoke(new ReadOnlyMemory<byte>(_recv, 0, len));
-                    spin.Reset();
-                }
-                else
-                {
-                    // No data — perform lightweight backoff
-                    spin.SpinOnce();
+                int delivered = 0;
 
-                    if (spin.NextSpinWillYield)
-                    {
-                        // Yield CPU briefly, minimal delay
-                        Thread.Sleep(0);
-
-                        // Optionally wait on event if configured
-                        _signal?.WaitOne(0);
-                    }
+                // Batch: drain up to BatchMax messages before any backoff
+                while (delivered < BatchMax && _ring.TryDequeue(NextBuffer(), out int len))
+                {
+                    // NOTE: len can be == 0 for empty logical frames; still signal
+                    OnFrame?.Invoke(new ReadOnlyMemory<byte>(_buffers[(_bufIndex - 1 + _buffers.Length) % _buffers.Length], 0, len));
+                    delivered++;
                 }
+
+                if (delivered > 0)
+                {
+                    // reset backoff on progress
+                    spinExp = 1;
+                    continue;
+                }
+
+                // Tight CPU-local backoff; no Sleep(0) in hot path
+                Thread.SpinWait(spinExp);
+                if (spinExp < (1 << 12)) spinExp <<= 1; // cap escalation
+
+                // Optional: very light event wait only if you enabled a signal
+                // if (spinExp >= (1 << 10)) _signal?.WaitOne(0);
             }
-
-            FasterIpcTrace.Info("[Directional] RX stop");
         }
 
         /// <summary>
-        /// Sends a message into the shared memory ring buffer.
+        /// Enqueue payload. Will busy-spin locally until space is available.
         /// </summary>
-        /// <param name="payload">The data to send.</param>
-        /// <remarks>
-        /// If the ring buffer is full, this method will spin-wait briefly
-        /// until space becomes available (non-blocking at kernel level).
-        /// </remarks>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Send(ReadOnlySpan<byte> payload)
         {
-            if (_reader) return; // readers cannot send
+            if (_reader) return;
+            if (payload.Length > _maxPayload)
+                throw new ArgumentException($"Payload size {payload.Length} exceeds max {_maxPayload} bytes for this ring.");
 
-            var spin = new SpinWait();
-
-            // Keep trying until there’s space in the ring
+            int spinExp = 1;
             while (!_ring.TryEnqueue(payload))
             {
-                spin.SpinOnce();
-                if (spin.NextSpinWillYield)
-                    Thread.Sleep(0);
+                Thread.SpinWait(spinExp);
+                if (spinExp < (1 << 12)) spinExp <<= 1;
             }
 
-            // Notify any waiting receiver
-            _signal?.Set();
+            _signal?.Set(); // no cost if null; cheap if manual-reset not used
         }
 
-        /// <summary>
-        /// Stops the receiver (if running) and releases unmanaged resources.
-        /// </summary>
         public void Dispose()
         {
             _running = false;
 
-            try { _signal?.Set(); } catch { /* wake up receiver */ }
-            try { _view.SafeMemoryMappedViewHandle.ReleasePointer(); } catch { /* ignore */ }
+            try { _signal?.Set(); } catch { /* wake reader if waiting */ }
+            if (_rxThread is not null && _rxThread.IsAlive)
+            {
+                if (!_rxThread.Join(TimeSpan.FromMilliseconds(200)))
+                    _rxThread.Interrupt();
+            }
 
+            try { _view.SafeMemoryMappedViewHandle.ReleasePointer(); } catch { }
             _view.Dispose();
             _mmf.Dispose();
-
-            // Return the buffer to the shared pool
-            ArrayPool<byte>.Shared.Return(_recv, clearArray: false);
             _signal?.Dispose();
         }
     }
