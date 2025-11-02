@@ -34,7 +34,7 @@ namespace Faster.Transport.Primitives
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER
             => Task.FromResult(result);
 #else
-            => TaskEx.FromResult(result); // fallback if needed
+            => FromResult(result); // fallback if needed
 #endif
     }
 }

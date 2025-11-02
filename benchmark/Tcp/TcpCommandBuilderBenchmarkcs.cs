@@ -15,7 +15,7 @@ namespace Faster.Transport.Benchmarks
     [IterationCount(50)]
     public class TcpSendBenchmark
     {
-        private IParticle _server;
+        private Reactor _server;
         private IParticle _client;
 
         private ReadOnlyMemory<byte> _payload = null!;
@@ -45,7 +45,16 @@ namespace Faster.Transport.Benchmarks
             var endpoint = new IPEndPoint(IPAddress.Loopback, 5555);
 
             // --- Server ---
-           // _server = new Reactor();
+            var server = new ParticleBuilder()
+      .UseMode(TransportMode.Tcp)
+      .AsServer(true)
+      .WithLocal(new IPEndPoint(IPAddress.Any, 5555))
+      .WithBufferSize(8192)
+      .WithParallelism(16)
+      .OnConnected(p => Console.WriteLine("Client connected"))
+      .OnReceived((p, data) => Console.WriteLine($"Received {data.Length} bytes"))
+      .Build();
+
 
             // --- Client ---
             _client = new ParticleBuilder()

@@ -22,6 +22,8 @@ namespace Faster.Transport.Primitives
         private PaddedLong _head; // consumer cursor
         private PaddedLong _tail; // producers cursor
 
+        private static readonly bool _needsClear = TypeNeedsClear();
+
         private struct Slot
         {
             public long Sequence; // slot state
@@ -112,9 +114,9 @@ namespace Faster.Transport.Primitives
                 // Slot holds a published value.
                 item = slot.Value;
 
-                // Clear value if reference type to allow GC
-                if (RuntimeHelpers.IsReferenceOrContainsReferences<T>())
-                    slot.Value = default!;
+                // Clear value if it's a reference or contains references
+                if (_needsClear)
+                    slot.Value = default(T);
 
                 // Mark slot free by advancing sequence ahead by capacity
                 Volatile.Write(ref slot.Sequence, pos + buffer.Length);
@@ -124,7 +126,7 @@ namespace Faster.Transport.Primitives
                 return true;
             }
 
-            item = default!;
+            item = default(T);
             return false; // empty or not yet visible
         }
 
@@ -159,6 +161,23 @@ namespace Faster.Transport.Primitives
             private long p1, p2, p3, p4, p5, p6, p7;
 #pragma warning restore CS0169
             public PaddedLong(long v) => Value = v;
+        }
+
+        // -------- Replacement for RuntimeHelpers.IsReferenceOrContainsReferences<T>() --------
+        private static bool TypeNeedsClear()
+        {
+            var t = typeof(T);
+            if (!t.IsValueType) return true; // reference type
+            if (t.IsPrimitive) return false; // e.g. int, long, etc.
+            // Fallback heuristic for structs (best effort)
+            foreach (var f in t.GetFields(System.Reflection.BindingFlags.Instance |
+                                          System.Reflection.BindingFlags.NonPublic |
+                                          System.Reflection.BindingFlags.Public))
+            {
+                if (!f.FieldType.IsValueType || f.FieldType.IsGenericType && f.FieldType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                    return true;
+            }
+            return false;
         }
     }
 }

@@ -1,4 +1,3 @@
-
 # 🚀 Faster.Transport — High-Performance Transport Framework for .NET
 
 > **Unified Real-Time Transport Layer for .NET 6–9 Applications**  
@@ -30,9 +29,7 @@
 
 ---
 
-## 🧰 Core Concepts
-
-### 🧩 `IParticle` — Unified Transport Interface
+## 🧩 `IParticle` — Unified Transport Interface
 
 Every transport implements the same high-performance contract:
 
@@ -48,47 +45,59 @@ public interface IParticle : IDisposable
 }
 ```
 
-This guarantees plug-and-play interchangeability between `TCP`, `UDP`, `IPC`, and `Inproc` implementations.
+All modes — TCP, UDP, IPC, and Inproc — share this exact API.
 
 ---
 
-## 🧪 Quick Start — Building a Transport Instance
+## ⚙️ Building Transports with `ParticleBuilder`
 
-`ParticleBuilder` provides a unified fluent API for all modes.
+`ParticleBuilder` provides a unified fluent API to construct any transport — client or server.
 
 ```csharp
 var particle = new ParticleBuilder()
     .UseMode(TransportMode.Tcp)
-    .ConnectTo(new IPEndPoint(IPAddress.Loopback, 9000))
+    .WithRemote(new IPEndPoint(IPAddress.Loopback, 9000))
     .OnConnected(p => Console.WriteLine("Connected!"))
     .OnReceived((p, data) => Console.WriteLine($"Received {data.Length} bytes"))
     .Build();
 ```
 
-### Supported Transport Modes
-
-| Enum | Transport | Description |
-|------|------------|-------------|
-| `TransportMode.Inproc` | In-process zero-copy | Sub-microsecond message latency |
-| `TransportMode.Ipc` | Shared-memory IPC | 10× faster than named pipes |
-| `TransportMode.Tcp` | Reliable socket transport | Classic client/server networking |
-| `TransportMode.Udp` | Datagram transport (unicast/multicast/broadcast) | Real-time streaming or telemetry |
-
 ---
 
-## ⚡ TCP Example
+## ⚡ TCP Examples
+
+### 🧠 TCP Client
 
 ```csharp
 var client = new ParticleBuilder()
     .UseMode(TransportMode.Tcp)
-    .ConnectTo(new IPEndPoint(IPAddress.Loopback, 9500))
-    .OnConnected(p => Console.WriteLine("TCP connected"))
+    .WithRemote(new IPEndPoint(IPAddress.Loopback, 9500))
+    .OnConnected(p => Console.WriteLine("✅ TCP connected"))
     .OnReceived((p, msg) =>
         Console.WriteLine($"📩 TCP: {Encoding.UTF8.GetString(msg.Span)}"))
     .Build();
 
 await client.SendAsync(Encoding.UTF8.GetBytes("Hello TCP!"));
 ```
+
+### 🧱 TCP Server (Reactor Mode)
+
+```csharp
+var server = new ParticleBuilder()
+    .UseMode(TransportMode.Tcp)
+    .AsServer(true)
+    .WithLocal(new IPEndPoint(IPAddress.Any, 9500))
+    .OnConnected(p => Console.WriteLine("🟢 Client connected"))
+    .OnReceived((p, msg) =>
+    {
+        Console.WriteLine($"Server got: {Encoding.UTF8.GetString(msg.Span)}");
+        p.Send("Echo"u8.ToArray());
+    })
+    .Build();
+```
+
+💡 The TCP server uses the **high-performance `Reactor`** architecture —  
+zero allocations, async accept loop, and automatic per-client `Particle` management.
 
 ---
 
@@ -98,10 +107,12 @@ Single socket handles both send and receive operations efficiently.
 
 ```csharp
 var port = 9700;
+
 var udp = new ParticleBuilder()
     .UseMode(TransportMode.Udp)
-    .BindTo(new IPEndPoint(IPAddress.Any, port))
-    .ConnectTo(new IPEndPoint(IPAddress.Loopback, port))
+    .WithLocal(new IPEndPoint(IPAddress.Any, port))
+    .WithRemote(new IPEndPoint(IPAddress.Loopback, port))
+    .AllowBroadcast(true)
     .OnConnected(p => Console.WriteLine("UDP ready"))
     .OnReceived((p, msg) =>
         Console.WriteLine($"📨 {Encoding.UTF8.GetString(msg.Span)}"))
@@ -122,7 +133,7 @@ var port = 9700;
 
 var peer = new ParticleBuilder()
     .UseMode(TransportMode.Udp)
-    .EnableMulticast(group, port, disableLoopback: false)
+    .WithMulticast(group, port, disableLoopback: false)
     .OnConnected(p => Console.WriteLine("✅ Joined multicast group"))
     .OnReceived((p, msg) =>
         Console.WriteLine($"📩 {Encoding.UTF8.GetString(msg.Span)}"))
@@ -131,7 +142,7 @@ var peer = new ParticleBuilder()
 await peer.SendAsync(Encoding.UTF8.GetBytes("Hello multicast group!"));
 ```
 
-💡 **Tip:** Set `disableLoopback: true` to avoid receiving your own packets.
+💡 Use `disableLoopback: true` to prevent receiving your own packets.
 
 ---
 
@@ -166,7 +177,7 @@ await client.SendAsync("Ping"u8.ToArray());
 
 ## 🧩 IPC Example — Cross-Process Messaging
 
-High-speed interprocess communication using memory-mapped files and SPSC rings.
+High-speed interprocess communication using shared memory and SPSC rings.
 
 ```csharp
 // Server
@@ -193,48 +204,51 @@ await client.SendAsync("Hi IPC!"u8.ToArray());
 
 ---
 
-## ⚙️ Benchmark Results (.NET 9, x64, Release)
-
-| Transport | Scenario | Messages | Mean | Allocated | Notes |
-|------------|-----------|----------|------|------------|-------|
-| 🧠 **Inproc** | 10k async messages | 10 000 | ** 0.8 ms 🏆** | 956 KB | Lock-free ring buffer |
-| 🧩 **IPC** | 10k async messages | 10 000 | 1.803 ms | 184 B  | Shared memory (MMF) |
-| 📡 **TCP** | 10k async messages| 10 000 | 76.82 ms | 1.3 MB | saea |
-| 📡 **UDP** | 10k datagrams | 10 000 | 92.82 ms | 1.6 MB | unicast |
-| 📡 **UDP** | 10k datagrams | 10 000 | 502.20 ms | 1.6 MB | multicast |
-
-All benchmarks performed using **BenchmarkDotNet** on **.NET 9.0**  
-CPU: AMD Ryzen 9 5950X | 64 GB DDR4 | Windows 11 x64  
-
----
-
 ## ⚙️ Common Builder Options
 
 | Method | Description |
 |--------|-------------|
-| `.UseMode(TransportMode)` | Select transport backend |
-| `.BindTo(EndPoint)` | Sets local socket endpoint |
-| `.ConnectTo(EndPoint)` | Defines remote target |
-| `.EnableMulticast(IPAddress, port, disableLoopback)` | Joins a multicast group |
-| `.AllowBroadcast(bool)` | Enables UDP broadcast mode |
-| `.WithChannel(string, bool)` | Sets shared channel name for IPC/Inproc |
-| `.WithBufferSize(int)` | Sets internal buffer size |
-| `.WithParallelism(int)` | Controls parallel async sends |
-| `.OnReceived(Action<IParticle, ReadOnlyMemory<byte>>)` | Handles incoming data |
-| `.OnConnected(Action<IParticle>)` | Invoked when ready |
-| `.OnDisconnected(Action<IParticle>)` | Invoked when closed |
+| `.UseMode(TransportMode)` | Selects transport backend |
+| `.AsServer(bool)` | Enables server mode (TCP, IPC, or Inproc) |
+| `.WithLocal(IPEndPoint)` | Sets the local bind address |
+| `.WithRemote(IPEndPoint)` | Sets the remote endpoint |
+| `.WithMulticast(IPAddress, int, bool)` | Joins a UDP multicast group |
+| `.AllowBroadcast(bool)` | Enables UDP broadcast |
+| `.WithChannel(string, bool)` | Sets the channel name (IPC/Inproc) |
+| `.WithBufferSize(int)` | Configures per-connection buffer size |
+| `.WithParallelism(int)` | Controls async send parallelism |
+| `.WithTcpBacklog(int)` | Sets TCP server backlog size |
+| `.WithAutoReconnect(double, double)` | Enables exponential reconnect retry |
+| `.OnReceived(Action<IParticle, ReadOnlyMemory<byte>>)` | Handler for incoming data |
+| `.OnConnected(Action<IParticle>)` | Invoked when ready or connected |
+| `.OnDisconnected(Action<IParticle>)` | Invoked when closed/disconnected |
 
 ---
 
-## 🔍 Keywords for Developers & SEO
+## 🧪 Benchmark Results (.NET 9, x64, Release)
+
+| Transport | Scenario | Messages | Mean | Allocated | Notes |
+|------------|-----------|----------|------|------------|-------|
+| 🧠 **Inproc** | 10k async messages | 10 000 | **0.8 ms 🏆** | 956 KB | Lock-free ring buffer |
+| 🧩 **IPC** | 10k async messages | 10 000 | 1.8 ms | 184 B | Shared memory (MMF) |
+| ⚡ **TCP** | 10k async messages | 10 000 | 76.8 ms | 1.3 MB | SAEA framed protocol |
+| 📡 **UDP (Unicast)** | 10k datagrams | 10 000 | 92.8 ms | 1.6 MB | Datagram sockets |
+| 📡 **UDP (Multicast)** | 10k datagrams | 10 000 | 502.2 ms | 1.6 MB | Multicast group |
+
+All benchmarks executed using **BenchmarkDotNet** on **.NET 9.0**  
+CPU: AMD Ryzen 9 5950X | 64 GB DDR4 | Windows 11 x64
+
+---
+
+## 🔍 Keywords for Developers
 
 **Tags:**  
 `.NET transport layer`, `.NET networking`, `zero-copy IPC`, `shared memory communication`,  
 `low latency TCP`, `UDP multicast broadcast`, `async sockets`,  
-`real-time telemetry`, `message bus`, `lock-free ring buffer`, `C# networking library`.
+`real-time telemetry`, `message bus`, `lock-free ring buffer`, `C# networking library`
 
 **Use Cases:**  
-Real-time trading systems · Game networking · Simulation · Distributed telemetry · Robotics · HFT
+Real-time trading · Game networking · Simulation · Distributed telemetry · Robotics · HFT systems
 
 ---
 

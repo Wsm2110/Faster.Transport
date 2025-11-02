@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace Faster.Transport.Primitives
 {
@@ -24,10 +25,8 @@ namespace Faster.Transport.Primitives
             public Slab(int length, int sliceSize)
             {
 #if NET5_0_OR_GREATER
-        // Uninitialized on newer runtimes
-        Buffer = GC.AllocateUninitializedArray<byte>(length);
+                Buffer = GC.AllocateUninitializedArray<byte>(length);
 #else
-                // netstandard2.1 fallback
                 Buffer = new byte[length];
 #endif
                 _handle = GCHandle.Alloc(Buffer, GCHandleType.Pinned);
@@ -60,15 +59,15 @@ namespace Faster.Transport.Primitives
         private readonly long _maxTotalBytes;
         private long _allocatedBytes;
 
-        private volatile Slab? _currentSlab;
-        private readonly ConcurrentBag<Slab> _slabs = new();
-        private readonly ConcurrentStack<(Slab slab, int offset)> _free = new();
+        private volatile Slab _currentSlab;
+        private readonly ConcurrentBag<Slab> _slabs = new ConcurrentBag<Slab>();
+        private readonly ConcurrentStack<Tuple<Slab, int>> _free = new ConcurrentStack<Tuple<Slab, int>>();
 
         private int _allocating;
         private bool _disposed;
 
-        public int SliceSize => _sliceSize;
-        public int SlabBytes => _slabBytes;
+        public int SliceSize { get { return _sliceSize; } }
+        public int SlabBytes { get { return _slabBytes; } }
 
         public ConcurrentBufferManager(int sliceSize, int initialSlabBytes, long maxTotalBytes = 0)
         {
@@ -80,7 +79,7 @@ namespace Faster.Transport.Primitives
             _slabBytes = initialSlabBytes;
             _maxTotalBytes = maxTotalBytes;
 
-            var slab = NewSlab(_slabBytes);
+            Slab slab = NewSlab(_slabBytes);
             _slabs.Add(slab);
             _currentSlab = slab;
         }
@@ -90,28 +89,27 @@ namespace Faster.Transport.Primitives
         {
             ThrowIfDisposed();
 
-            if (_free.TryPop(out var entry))
+            Tuple<Slab, int> entry;
+            if (_free.TryPop(out entry))
             {
-                var mem = new Memory<byte>(entry.slab.Buffer, entry.offset, _sliceSize);
-                args.SetBuffer(mem);
-                args.UserToken = entry; // O(1) free
+                args.SetBuffer(entry.Item1.Buffer, entry.Item2, _sliceSize);
+                args.UserToken = entry;
                 return true;
             }
 
-            var slab = _currentSlab;
-            if (slab is not null && slab.TryRent(out int off))
+            Slab slab = _currentSlab;
+            int off;
+            if (slab != null && slab.TryRent(out off))
             {
-                var mem = new Memory<byte>(slab.Buffer, off, _sliceSize);
-                args.SetBuffer(mem);
-                args.UserToken = (slab, off);
+                args.SetBuffer(slab.Buffer, off, _sliceSize);
+                args.UserToken = Tuple.Create(slab, off);
                 return true;
             }
 
             if (TryAllocateNewSlab(out slab) && slab.TryRent(out off))
             {
-                var mem = new Memory<byte>(slab.Buffer, off, _sliceSize);
-                args.SetBuffer(mem);
-                args.UserToken = (slab, off);
+                args.SetBuffer(slab.Buffer, off, _sliceSize);
+                args.UserToken = Tuple.Create(slab, off);
                 return true;
             }
 
@@ -124,15 +122,19 @@ namespace Faster.Transport.Primitives
             if (_disposed)
                 return;
 
-            if (args.UserToken is (Slab slab, int offset))
+            var entry = args.UserToken as Tuple<Slab, int>;
+            if (entry != null)
             {
                 args.UserToken = null;
-                args.SetBuffer(Memory<byte>.Empty);
-                _free.Push((slab, offset));
+                args.SetBuffer(null, 0, 0); // Clear buffer
+                _free.Push(entry);
             }
         }
 
-        public int FreeCount => _free.Count;
+        public int FreeCount
+        {
+            get { return _free.Count; }
+        }
 
         public long TotalCapacitySlices
         {
@@ -146,28 +148,29 @@ namespace Faster.Transport.Primitives
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private Slab NewSlab(int bytes)
         {
-            var slab = new Slab(bytes, _sliceSize);
+            Slab slab = new Slab(bytes, _sliceSize);
             Interlocked.Add(ref _allocatedBytes, bytes);
             return slab;
         }
 
         private bool TryAllocateNewSlab(out Slab slab)
         {
-            slab = _currentSlab!;
+            slab = _currentSlab;
 
-            if (slab is not null && slab.TryRent(out _))
+            int dummy;
+            if (slab != null && slab.TryRent(out dummy))
                 return true;
 
             if (Interlocked.CompareExchange(ref _allocating, 1, 0) != 0)
             {
                 Thread.Yield();
-                var s = _currentSlab;
-                if (s is not null && s.TryRent(out _))
+                Slab s = _currentSlab;
+                if (s != null && s.TryRent(out dummy))
                 {
                     slab = s;
                     return true;
                 }
-                slab = s!;
+                slab = s;
                 return false;
             }
 
@@ -177,7 +180,7 @@ namespace Faster.Transport.Primitives
                 if (_maxTotalBytes != 0 && cur + _slabBytes > _maxTotalBytes)
                     return false;
 
-                var newSlab = NewSlab(_slabBytes);
+                Slab newSlab = NewSlab(_slabBytes);
                 _slabs.Add(newSlab);
                 Volatile.Write(ref _currentSlab, newSlab);
                 slab = newSlab;
@@ -195,22 +198,19 @@ namespace Faster.Transport.Primitives
             _disposed = true;
 
             _currentSlab = null;
-            while (_slabs.TryTake(out var slab))
+            Slab s;
+            while (_slabs.TryTake(out s))
             {
-                if (slab is IDisposable disposable)
-                {
-                    disposable.Dispose();
-                }
+                s.Dispose();
             }
-            while (_free.TryPop(out var freeSlab))
-            {
-                if (freeSlab.slab is IDisposable disposable)
-                {
-                    disposable.Dispose();
-                }
-            }
-            Interlocked.Exchange(ref _allocatedBytes, 0);
 
+            Tuple<Slab, int> freeEntry;
+            while (_free.TryPop(out freeEntry))
+            {
+                freeEntry.Item1.Dispose();
+            }
+
+            Interlocked.Exchange(ref _allocatedBytes, 0);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>netstandard2.1</TargetFrameworks>
+    <TargetFrameworks>netstandard2.0;netstandard2.1</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
@@ -22,7 +22,7 @@
     <Company>Faster Framework</Company>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>Faster.Transport</PackageId>
-    <Version>0.0.15</Version>
+    <Version>0.0.16</Version>
     <Authors>Wiljan Ruizendaal</Authors>
     <RepositoryUrl>https://github.com/Wsm2110/Faster.Transport</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Wsm2110/Faster.Transport</PackageProjectUrl>

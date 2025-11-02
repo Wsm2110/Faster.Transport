@@ -7,11 +7,11 @@ using System.Threading;
 namespace Faster.Transport.Primitives
 {
     /// <summary>
-    /// Length-prefixed (little-endian) frame parser with **immediate dispatch**.
+    /// Length-prefixed (little-endian) frame parser with immediate dispatch.
     /// Single-producer (Feed) only. Calls <see cref="OnFrame"/> synchronously for each parsed frame.
     ///
     /// WARNING (zero-copy mode): When <paramref name="copyOnDispatch"/> is false, the provided
-    /// ReadOnlyMemory<byte> points into the parser's internal buffer. Do NOT retain it after the callback returns.
+    /// ReadOnlyMemory&lt;byte&gt; points into the parser's internal buffer. Do NOT retain it after the callback returns.
     /// Use copyOnDispatch: true if you need to store the payload.
     /// </summary>
     public sealed class FrameParser : IDisposable
@@ -32,19 +32,13 @@ namespace Faster.Transport.Primitives
         /// <summary>
         /// Invoked for each complete frame (payload only; 4-byte header excluded).
         /// </summary>
-        public Action<ReadOnlyMemory<byte>>? OnFrame { get; set; }
+        public Action<ReadOnlyMemory<byte>> OnFrame { get; set; }
 
         /// <summary>
         /// Raised for non-fatal parser errors (overflow, invalid length, queue policy, etc.).
         /// </summary>
-        public Action<Exception>? OnError { get; set; }
+        public Action<Exception> OnError { get; set; }
 
-        /// <param name="capacity">Ring size in bytes (power of two). 64 KiB is a solid default.</param>
-        /// <param name="maxFrameSize">Max allowed payload size (bytes). Defaults to capacity.</param>
-        /// <param name="copyOnDispatch">
-        /// If true, the parser copies every payload into a fresh array before invoking <see cref="OnFrame"/>.
-        /// Safer if your callback stores payloads. If false, contiguous frames are zero-copy.
-        /// </param>
         public FrameParser(int capacity = 64 * 1024, int? maxFrameSize = null, bool copyOnDispatch = false)
         {
             if (!IsPowerOfTwo(capacity))
@@ -112,8 +106,8 @@ namespace Faster.Transport.Primitives
                 {
                     Span<byte> tmp = stackalloc byte[4];
                     int first = _capacity - _tail;
-                    _buffer.AsSpan(_tail, first).CopyTo(tmp);
-                    _buffer.AsSpan(0, 4 - first).CopyTo(tmp[first..]);
+                    _buffer.AsSpan(_tail, first).CopyTo(tmp.Slice(0, first));
+                    _buffer.AsSpan(0, 4 - first).CopyTo(tmp.Slice(first, 4 - first));
                     len = BinaryPrimitives.ReadInt32LittleEndian(tmp);
                 }
 
@@ -123,7 +117,8 @@ namespace Faster.Transport.Primitives
                     // attempt resync
                     _tail = (_tail + 1) & _mask;
                     _length -= 1;
-                    OnError?.Invoke(new InvalidDataException($"Invalid frame length: {len} (max {_maxFrameSize})."));
+                    OnError?.Invoke(new InvalidDataException(
+                        "Invalid frame length: " + len + " (max " + _maxFrameSize + ")."));
                     continue;
                 }
 
@@ -145,7 +140,7 @@ namespace Faster.Transport.Primitives
                         int firstPart = _capacity - payloadStart;
                         int secondPart = len - firstPart;
                         _buffer.AsSpan(payloadStart, firstPart).CopyTo(copy.AsSpan(0, firstPart));
-                        _buffer.AsSpan(0, secondPart).CopyTo(copy.AsSpan(firstPart));
+                        _buffer.AsSpan(0, secondPart).CopyTo(copy.AsSpan(firstPart, secondPart));
                     }
 
                     OnFrame?.Invoke(copy);
@@ -164,7 +159,7 @@ namespace Faster.Transport.Primitives
                         int firstPart = _capacity - payloadStart;
                         int secondPart = len - firstPart;
                         _buffer.AsSpan(payloadStart, firstPart).CopyTo(_tempBuffer.AsSpan(0, firstPart));
-                        _buffer.AsSpan(0, secondPart).CopyTo(_tempBuffer.AsSpan(firstPart));
+                        _buffer.AsSpan(0, secondPart).CopyTo(_tempBuffer.AsSpan(firstPart, secondPart));
 
                         // WARNING: do not capture this beyond the callback; tempBuffer is reused
                         var mem = new ReadOnlyMemory<byte>(_tempBuffer, 0, len);
@@ -191,11 +186,13 @@ namespace Faster.Transport.Primitives
             if (_disposed) return;
             _disposed = true;
 
-            // Ensure no outstanding references when copyOnDispatch=false.
             ArrayPool<byte>.Shared.Return(_buffer);
             ArrayPool<byte>.Shared.Return(_tempBuffer);
         }
 
-        private static bool IsPowerOfTwo(int v) => (v & (v - 1)) == 0;
+        private static bool IsPowerOfTwo(int v)
+        {
+            return (v & (v - 1)) == 0;
+        }
     }
 }

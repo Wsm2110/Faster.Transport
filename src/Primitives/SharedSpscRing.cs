@@ -55,8 +55,8 @@ namespace Faster.Transport.Primitives
             else
             {
                 // wrapped
-                src[..room].CopyTo(new Span<byte>(Data + pos, room));
-                src[room..].CopyTo(new Span<byte>(Data, len - room));
+                src.Slice(0, room).CopyTo(new Span<byte>(Data + pos, room));
+                src.Slice(room).CopyTo(new Span<byte>(Data, len - room));
             }
         }
 
@@ -73,8 +73,8 @@ namespace Faster.Transport.Primitives
             }
             else
             {
-                new ReadOnlySpan<byte>(Data + pos, room).CopyTo(dst[..room]);
-                new ReadOnlySpan<byte>(Data, len - room).CopyTo(dst[room..]);
+                new ReadOnlySpan<byte>(Data + pos, room).CopyTo(dst.Slice(0, room));
+                new ReadOnlySpan<byte>(Data, len - room).CopyTo(dst.Slice(room));
             }
         }
 
@@ -183,7 +183,7 @@ namespace Faster.Transport.Primitives
             // Read payload
             pos = (pos + 4) & _mask;
             if (payloadLen != 0)
-                ReadBytes(pos, dst[..payloadLen]);
+                ReadBytes(pos, dst.Slice(0, payloadLen));
 
             // Consume (release): advance head with wrap
             VWrite(ref Head, (head + need) & _mask);

@@ -63,7 +63,7 @@ namespace Faster.Transport.Primitives
         /// <remarks>
         /// This method blocks only via <see cref="SpinWait"/> (CPU yield-based), avoiding kernel waits.
         /// </remarks>
-        public void TryRent(out SocketAsyncEventArgs args)
+        public void Rent(out SocketAsyncEventArgs args)
         {
             var spinner = new SpinWait();
 
