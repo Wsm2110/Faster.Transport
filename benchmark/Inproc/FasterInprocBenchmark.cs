@@ -1,5 +1,7 @@
 ﻿using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
+using Faster.Transport;
+using Faster.Transport.Contracts;
 using Faster.Transport.Inproc;
 using System;
 using System.Text;
@@ -9,9 +11,9 @@ using System.Threading.Tasks;
 [MemoryDiagnoser]
 [WarmupCount(3)]
 [IterationCount(10)]
-public class FasterInprocBenchmark  
+public class FasterInprocBenchmark
 {
-    private InprocReactor _hub = null!;
+    private IParticle _hub = null!;
     private InprocParticle _client = null!;
     private int _received;
     private TaskCompletionSource<bool> _tcs;
@@ -20,14 +22,14 @@ public class FasterInprocBenchmark
     [GlobalSetup]
     public void Setup()
     {
-        _hub = new InprocReactor("bench", bufferSize: 8192, ringCapacity: 8192);
-        _hub.OnReceived = (particle, data) =>
-          {
-              // echo back
-              particle.Send(data.Span);
-          };
-
-        _hub.Start();
+        _hub = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel("bench", isServer: true)
+            .OnReceived((particle, data) =>
+            {
+                particle.Send(data.Span);
+            })
+            .Build();
 
         _client = new InprocParticle("bench", isServer: false);
         _client.OnReceived = (_, data) =>

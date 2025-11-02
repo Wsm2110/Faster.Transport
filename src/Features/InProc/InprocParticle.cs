@@ -1,7 +1,10 @@
 ﻿using Faster.Transport.Contracts;
 using Faster.Transport.Primitives;
 using System;
+using System.Buffers;
 using System.Drawing;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Faster.Transport.Inproc;
 
@@ -120,6 +123,23 @@ public sealed class InprocParticle : IParticle, IDisposable
 
     #region Send
 
+    public void SendF(ReadOnlyMemory<byte> payload)
+    {
+        if (payload.Length == 0) return;
+        if (_isDisposed) throw new ObjectDisposedException(nameof(InprocParticle));
+        var link = _link ?? throw new InvalidOperationException("Not connected.");
+
+        var ring = _isServer ? link.ToClient : link.ToServer;
+        int spinExp = 1;
+
+        while (!ring.TryEnqueue(payload))
+        {
+            Thread.SpinWait(spinExp);
+            spinExp = spinExp < 4096 ? (spinExp << 1) : 4096;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Send(ReadOnlySpan<byte> payload)
     {
         if (payload.Length == 0) return;
@@ -128,16 +148,23 @@ public sealed class InprocParticle : IParticle, IDisposable
 
         var ring = _isServer ? link.ToClient : link.ToServer;
 
-        int spinExp = 1;
-     
-        // TODO fix allocation...
-        while (!ring.TryEnqueue(payload.ToArray()))
+        // Fallback: rent a temporary array since ReadOnlySpan -> ReadOnlyMemory can't be zero-copy.
+        byte[] rented = ArrayPool<byte>.Shared.Rent(payload.Length);
+        try
         {
-            Thread.SpinWait(spinExp);
-            if (spinExp < (1 << 12))
+            payload.CopyTo(rented);
+            var memory = new ReadOnlyMemory<byte>(rented, 0, payload.Length);
+
+            int spinExp = 1;
+            while (!ring.TryEnqueue(memory))
             {
-                spinExp <<= 1;
+                Thread.SpinWait(spinExp);
+                spinExp = spinExp < 4096 ? (spinExp << 1) : 4096;
             }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
         }
     }
 

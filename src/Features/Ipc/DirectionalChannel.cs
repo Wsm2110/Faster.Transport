@@ -101,43 +101,57 @@ namespace Faster.Transport.Ipc
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private ref byte[] NextBuffer()
-        {
-            var idx = _bufIndex;
-            _bufIndex = (idx + 1) % _buffers.Length;
-            return ref _buffers[idx];
-        }
-
         private void ReceiveLoop()
         {
-            var spinExp = 1; // exponential spin budget
-            while (_running)
+            var spinExp = 1;
+            var buffers = _buffers; // local copy avoids repeated field deref
+            var bufCount = buffers.Length;
+            int bufIndex = _bufIndex;
+
+            while (Volatile.Read(ref _running))
             {
                 int delivered = 0;
 
-                // Batch: drain up to BatchMax messages before any backoff
-                while (delivered < BatchMax && _ring.TryDequeue(NextBuffer(), out int len))
+                // Drain up to BatchMax messages before any backoff
+                while (delivered < BatchMax)
                 {
-                    // NOTE: len can be == 0 for empty logical frames; still signal
-                    OnFrame?.Invoke(new ReadOnlyMemory<byte>(_buffers[(_bufIndex - 1 + _buffers.Length) % _buffers.Length], 0, len));
+                    // TryDequeue returns false if ring is empty
+                    if (!_ring.TryDequeue(buffers[bufIndex], out int len))
+                        break;
+
+                    if (len >= 0)
+                    {
+                        // Avoid modulo inside hot loop (manual wrap)
+                        bufIndex++;
+                        if (bufIndex == bufCount)
+                            bufIndex = 0;
+
+                        // Inline memory slice; avoids allocation and modulo recompute
+                        var mem = new ReadOnlyMemory<byte>(buffers[bufIndex == 0 ? bufCount - 1 : bufIndex - 1], 0, len);
+                        OnFrame?.Invoke(mem);
+                    }
+
                     delivered++;
                 }
 
-                if (delivered > 0)
+                if (delivered != 0)
                 {
-                    // reset backoff on progress
+                    // Reset exponential backoff after any progress
                     spinExp = 1;
                     continue;
                 }
 
-                // Tight CPU-local backoff; no Sleep(0) in hot path
+                // Cache-friendly exponential backoff
                 Thread.SpinWait(spinExp);
-                if (spinExp < (1 << 12)) spinExp <<= 1; // cap escalation
+                spinExp = spinExp < 4096 ? spinExp << 1 : 4096;
 
-                // Optional: very light event wait only if you enabled a signal
-                // if (spinExp >= (1 << 10)) _signal?.WaitOne(0);
+                // Optional: light event wait (if signal used for hybrid blocking)
+                // if (spinExp == 4096) _signal?.WaitOne(0);
             }
+
+            _bufIndex = bufIndex; // persist local index at exit
         }
+
 
         /// <summary>
         /// Enqueue payload. Will busy-spin locally until space is available.
@@ -153,7 +167,10 @@ namespace Faster.Transport.Ipc
             while (!_ring.TryEnqueue(payload))
             {
                 Thread.SpinWait(spinExp);
-                if (spinExp < (1 << 12)) spinExp <<= 1;
+                if (spinExp < (1 << 12))
+                {
+                    spinExp <<= 1;
+                }
             }
 
             _signal?.Set(); // no cost if null; cheap if manual-reset not used

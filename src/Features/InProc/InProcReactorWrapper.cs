@@ -18,10 +18,10 @@ internal sealed class InprocServerWrapper : IParticle
     {
         _reactor = reactor ?? throw new ArgumentNullException(nameof(reactor));
 
-        // Wire reactor events to behave like particle-level events
-        _reactor.OnReceived = (p, msg) => OnReceived?.Invoke(p, msg);
-        _reactor.ClientConnected = p => OnConnected?.Invoke(p);
-        _reactor.ClientDisconnected = p => OnDisconnected?.Invoke(p);
+        // Wire reactor events to particle-level events
+        OnReceived = _reactor.OnReceived;
+        OnConnected = _reactor.ClientConnected;
+        OnDisconnected = _reactor.ClientDisconnected;
     }
 
     public Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
@@ -29,13 +29,13 @@ internal sealed class InprocServerWrapper : IParticle
     public Action<IParticle>? OnConnected { get; set; }
 
     public void Send(ReadOnlySpan<byte> payload)
-    {   
-        
+    {
+        throw new NotImplementedException("Servers arent suppose to send data, just echo");
     }
 
     public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
-    {     
-      return TaskCompat.CompletedValueTask;
+    {
+        throw new NotImplementedException("Servers arent suppose to send data, just echo");
     }
 
     public void Dispose() => _reactor.Dispose();
