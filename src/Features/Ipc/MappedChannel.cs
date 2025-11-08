@@ -10,7 +10,7 @@ namespace Faster.Transport.Ipc
     /// Ultra-fast SPSC MMF channel with fixed back-buffer ring and batched receive.
     /// Keeps API: OnFrame(ReadOnlyMemory<byte>).
     /// </summary>
-    public unsafe sealed class DirectionalChannel : IDisposable
+    public unsafe sealed class MappedChannel : IDisposable
     {
         private const int HeaderBytes = 128;      // 0..63: head padding, 64..127: tail padding
         private const int BatchMax = 32;        // messages per loop iteration before re-checking _running
@@ -37,7 +37,7 @@ namespace Faster.Transport.Ipc
 
         /// <param name="backBufferCount">How many back buffers to rotate (default 8). Increase if consumer is slower.</param>
         /// <param name="rxThreadPriority">RX thread priority (default Highest). Use Normal if you prefer.</param>
-        public DirectionalChannel(
+        public MappedChannel(
             string mapName,
             string? evName,
             int totalBytes,

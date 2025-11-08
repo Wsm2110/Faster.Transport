@@ -1,37 +1,32 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>netstandard2.0;netstandard2.1</TargetFrameworks>
+    <TargetFrameworks>net48;netstandard2.0;netstandard2.1;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
     <!-- NuGet packaging metadata -->
+    <PackageId>Faster.Transport</PackageId>
+    <Version>0.0.19</Version>
+    <Authors>Wiljan Ruizendaal</Authors>
+    <Company>Faster Framework</Company>
     <Description>
       High-performance, zero-allocation transport framework for real-time .NET applications.
       Provides unified client and server APIs built on a Reactor architecture with support for
       TCP, IPC (shared memory), Inproc, and UDP transports.
-      Designed for ultra-low-latency, event-driven messaging in trading systems, telemetry, simulation,
-      and distributed processing pipelines.
     </Description>
-    <PackageTags>
-      networking;transport;tcp;ipc;inproc;udp;async;reactor;client;server;messaging;
-      high-performance;low-latency;zerocopy;real-time;event-driven;dotnet;csharp;distributed;
-      simulation;telemetry;commands;pipeline;communication;
-    </PackageTags>
-    <Company>Faster Framework</Company>
-    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <PackageId>Faster.Transport</PackageId>
-    <Version>0.0.17</Version>
-    <Authors>Wiljan Ruizendaal</Authors>
+    <PackageTags>networking;transport;tcp;ipc;udp;async;reactor;messaging;high-performance;low-latency;event-driven</PackageTags>
     <RepositoryUrl>https://github.com/Wsm2110/Faster.Transport</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Wsm2110/Faster.Transport</PackageProjectUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <AssemblyOriginatorKeyFile>Faster.Transport.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
-    <LangVersion>Latest</LangVersion>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 
     <!-- Debugging & SourceLink -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
@@ -44,14 +39,34 @@
     <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <!-- Core dependencies -->
   <ItemGroup>
-    <PackageReference Include="System.Memory" Version="4.5.5" />
-    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2" />
-    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.5.4" />
+    <PackageReference Include="CommunityToolkit.HighPerformance" Version="8.4.*" PrivateAssets="none" IncludeAssets="all" />
+    <PackageReference Include="NetMQ" Version="4.0.2.*" PrivateAssets="none" IncludeAssets="all" />
+    <PackageReference Include="MessagePack" Version="3.1.*" PrivateAssets="none" IncludeAssets="all" />
+  </ItemGroup>
+
+  <!-- Framework-specific dependencies -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Memory" Version="4.6.*" PrivateAssets="none" />
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.*" PrivateAssets="none" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="[4.6.3,5.0)" PrivateAssets="none" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <PackageReference Include="System.Memory" Version="4.6.*" PrivateAssets="none" />
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.*" PrivateAssets="none" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="[4.6.3,5.0)" PrivateAssets="none" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.*" PrivateAssets="none" />   
   </ItemGroup>
 
   <Target Name="GenerateSnk" BeforeTargets="BeforeBuild" Condition="!Exists('$(ProjectDir)Faster.Transport.snk')">
-    <Exec Command="powershell -ExecutionPolicy Bypass -Command ^&#xD;&#xA;    $csp = New-Object System.Security.Cryptography.RSACryptoServiceProvider(2048); ^&#xD;&#xA;    $bytes = $csp.ExportCspBlob($true); ^&#xD;&#xA;    [System.IO.File]::WriteAllBytes('$(ProjectDir)Faster.Transport.snk', $bytes)" />
+    <Exec Command="powershell -ExecutionPolicy Bypass -Command ^
+        $csp = New-Object System.Security.Cryptography.RSACryptoServiceProvider(2048); ^
+        $bytes = $csp.ExportCspBlob($true); ^
+        [System.IO.File]::WriteAllBytes('$(ProjectDir)Faster.Transport.snk', $bytes)" />
   </Target>
-
 </Project>

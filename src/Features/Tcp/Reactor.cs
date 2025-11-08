@@ -1,14 +1,9 @@
-﻿using Faster.Transport.Primitives;
-using System.Buffers.Binary;
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.CompilerServices;
-using System.Threading;
+using Faster.Transport.Contracts;
 
 namespace Faster.Transport.Features.Tcp;
-
-using Faster.Transport.Contracts;
 
 /// <summary>
 /// High-performance, event-driven TCP reactor server using <see cref="SocketAsyncEventArgs"/>.
@@ -20,7 +15,7 @@ using Faster.Transport.Contracts;
 /// - Compatible with .NET Framework 4.8+ and .NET 8  
 /// - Ideal for real-time, low-latency systems
 /// </remarks>
-public sealed class Reactor : IDisposable
+public sealed class Reactor : IDisposable, IReactor
 {
     private readonly Socket _listener;
     private readonly CancellationTokenSource _cts = new();
@@ -32,6 +27,7 @@ public sealed class Reactor : IDisposable
     private volatile bool _isRunning;
 
     public Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
+
     public Action<IParticle>? OnConnected { get; set; }
 
     public Reactor(EndPoint bindEndPoint, int backlog = 1024, int bufferSize = 8192, int maxDegreeOfParallelism = 8)
@@ -54,8 +50,10 @@ public sealed class Reactor : IDisposable
     public void Start()
     {
         if (_isRunning)
-            throw new InvalidOperationException("Server already running.");
-
+        {
+            return;
+        }
+    
         _isRunning = true;
         _acceptArgs = new SocketAsyncEventArgs();
         _acceptArgs.Completed += AcceptCompleted;
@@ -128,7 +126,7 @@ public sealed class Reactor : IDisposable
             // Build client handler from accepted socket
             var client = new ParticleBuilder()
                 .UseMode(TransportMode.Tcp)
-                .FromAcceptedSocket(socket) 
+                .FromAcceptedSocket(socket)
                 .WithBufferSize(_bufferSize)
                 .WithParallelism(_maxDegreeOfParallelism)
                 .OnReceived(OnReceived)

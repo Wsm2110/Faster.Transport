@@ -30,8 +30,7 @@ namespace Faster.Transport.Benchmarks
             new Random(42).NextBytes(_payload);
 
             _server = new ParticleBuilder()
-                .UseMode(TransportMode.Ipc)
-                .WithChannel(_channel, isServer: true)
+                .UseMode(TransportMode.Ipc)              
                 .OnReceived((p, data) =>
                 {
                     p.Send(data.Span);

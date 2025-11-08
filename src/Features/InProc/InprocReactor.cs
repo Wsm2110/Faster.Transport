@@ -1,82 +1,92 @@
 ﻿using Faster.Transport.Contracts;
-using System;
 using System.Collections.Concurrent;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace Faster.Transport.Inproc
 {
     /// <summary>
-    /// In-process (same application) message hub that manages multiple in-process client connections.
-    /// 
-    /// Think of this as a local "server" that multiple in-process clients connect to.
-    /// Each client is represented by an <see cref="InprocParticle"/> instance.
-    /// 
-    /// ✅ Key responsibilities:
-    /// - Accept new in-process client links from <see cref="InprocRegistry"/>.
-    /// - Create a dedicated <see cref="InprocParticle"/> for each client.
-    /// - Forward messages from clients to the central <see cref="OnReceived"/> handler.
-    /// - Handle disconnects and cleanup automatically.
-    /// 
-    /// This class is the in-memory equivalent of an IPC or TCP server — 
-    /// but everything runs inside the same process for **maximum performance**.
+    /// An in-process (same application) message hub that accepts and manages multiple in-process clients.
     /// </summary>
-    public sealed class InprocReactor: IDisposable
+    /// <remarks>
+    /// Think of this like a lightweight TCP or IPC server, but everything runs **inside one process** — 
+    /// so it’s extremely fast and has no network or OS overhead.
+    /// 
+    /// Each client is represented by an <see cref="InprocParticle"/>, which handles
+    /// message sending and receiving through shared in-memory channels.
+    /// 
+    /// ✅ Responsibilities:
+    /// <list type="bullet">
+    ///   <item>Registers itself in <see cref="InprocRegistry"/> so clients can find it by name.</item>
+    ///   <item>Accepts new client connections and creates <see cref="InprocParticle"/> instances.</item>
+    ///   <item>Handles message forwarding through the <see cref="OnReceived"/> event.</item>
+    ///   <item>Cleans up automatically when clients disconnect or the reactor stops.</item>
+    /// </list>
+    /// </remarks>
+    public sealed class InprocReactor : IReactor, IDisposable
     {
         #region Fields
 
+        // Unique name of this reactor (clients must use the same name to connect)
         private readonly string _name;
+
+        // Internal configuration
         private readonly int _bufferSize;
         private readonly int _ringCapacity;
         private readonly int _maxDop;
 
+        // Used to cancel background loops when stopping
         private readonly CancellationTokenSource _cts = new();
 
-        // Keeps track of active connected clients (each client has an ID)
+        // Tracks all connected clients (key = client ID)
         private readonly ConcurrentDictionary<int, InprocParticle> _clients = new();
 
-        // Queue for pending incoming connections
+        // Queue for new incoming connections from clients
         private readonly ConcurrentQueue<InprocLink> _incoming = new();
 
+        // Background task that runs the accept loop
         private Task? _acceptLoop;
+
+        // Counter for assigning unique numeric client IDs
         private int _clientId;
+        private bool _running;
 
         #endregion
 
         #region Events
 
         /// <summary>
-        /// Triggered when a new client connects successfully.
+        /// Called when a new client successfully connects to this reactor.
         /// </summary>
-        public Action<IParticle>? ClientConnected;
+        public Action<IParticle>? OnConnected { get; set; }
 
         /// <summary>
-        /// Triggered when a client disconnects or an error occurs.
+        /// Called when a client disconnects or its connection is lost.
         /// </summary>
-        public Action<IParticle>? ClientDisconnected;
+        public Action<IParticle>? OnDisconnected { get; set; }
 
         /// <summary>
-        /// Triggered whenever any connected client sends a message to this reactor.
+        /// Called whenever a message is received from any connected client.
         /// </summary>
-        public Action<IParticle, ReadOnlyMemory<byte>>? OnReceived;
+        public Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
 
         #endregion
 
         #region Constructor
 
         /// <summary>
-        /// Creates a new in-process message hub.
+        /// Creates a new in-process reactor (server) that other in-process clients can connect to.
         /// </summary>
-        /// <param name="name">The unique name of the hub (must match clients).</param>
-        /// <param name="bufferSize">Buffer size for each client (default 8192 bytes).</param>
-        /// <param name="ringCapacity">Capacity of each client's ring buffer.</param>
-        /// <param name="maxDegreeOfParallelism">How many threads can send messages concurrently.</param>
+        /// <param name="name">The unique name of this reactor (used by clients to find it).</param>
+        /// <param name="bufferSize">Buffer size per client (default: 8192 bytes).</param>
+        /// <param name="ringCapacity">Capacity of each client’s internal ring buffer.</param>
+        /// <param name="maxDegreeOfParallelism">Number of threads that can send messages concurrently.</param>
         public InprocReactor(string name, int bufferSize = 8192, int ringCapacity = 4096, int maxDegreeOfParallelism = 8)
         {
             _name = name ?? throw new ArgumentNullException(nameof(name));
             _bufferSize = bufferSize;
             _ringCapacity = ringCapacity;
             _maxDop = maxDegreeOfParallelism;
+
+            Start();
         }
 
         #endregion
@@ -84,74 +94,82 @@ namespace Faster.Transport.Inproc
         #region Public API
 
         /// <summary>
-        /// Starts the reactor, registers it in the <see cref="InprocRegistry"/>, 
-        /// and begins listening for incoming connections.
+        /// Starts the reactor and registers it globally so clients can discover it.
         /// </summary>
+        /// <remarks>
+        /// After calling <see cref="Start"/>, this reactor begins listening for in-process client connections.  
+        /// Clients that call <c>InprocParticle.Connect("MyHub")</c> will automatically link to it.
+        /// </remarks>
         public void Start()
         {
-            // Register this hub globally so that clients can find it
+            if (_running)
+            {
+                return;
+            }
+
+            _running = true;
+
+            // Make this reactor discoverable by name
             InprocRegistry.RegisterHub(_name, this);
 
-            // Run the accept loop in a background task
+            // Start the background task that accepts new client connections
             _acceptLoop = Task.Run(AcceptLoopAsync, _cts.Token);
         }
 
         /// <summary>
-        /// Called internally by <see cref="InprocRegistry"/> when a client connects.
-        /// Adds the new connection (link) to the queue to be processed by the accept loop.
+        /// Called by <see cref="InprocRegistry"/> when a client wants to connect to this reactor.
         /// </summary>
+        /// <param name="link">The shared memory link representing the new client connection.</param>
         internal void EnqueueIncoming(InprocLink link) => _incoming.Enqueue(link);
 
         #endregion
 
-        #region Connection management
+        #region Connection Management
 
         /// <summary>
-        /// Continuously accepts new in-process connections and attaches a new
-        /// <see cref="InprocParticle"/> to handle each one.
-        /// 
-        /// Runs in a background task until the reactor is disposed.
+        /// Background task that continuously accepts and manages in-process connections.
         /// </summary>
+        /// <remarks>
+        /// This loop runs as long as the reactor is active.  
+        /// Each time a new client link appears in the queue, it creates a new
+        /// <see cref="InprocParticle"/> to represent that connection.
+        /// </remarks>
         private async Task AcceptLoopAsync()
         {
             try
             {
                 while (!_cts.IsCancellationRequested)
                 {
-                    // Handle all pending connections
+                    // Process all pending incoming client connections
                     while (_incoming.TryDequeue(out var link))
                     {
-                        // Assign a unique numeric ID to the new client
+                        // Assign a unique ID to this new client
                         var id = Interlocked.Increment(ref _clientId);
 
-                        // Create a server-side particle to represent this client connection
+                        // Create a server-side particle to handle communication
                         var serverParticle = new InprocParticle(_name, isServer: true, _ringCapacity);
 
-                        // When the client disconnects, clean up
+                        // Clean up when this client disconnects
                         serverParticle.OnDisconnected = _ => RemoveClient(id);
 
-                        // Also notify external subscribers (if any)
-                        serverParticle.OnDisconnected = ClientDisconnected;
-
-                        // Wire up message forwarding — when a client sends data, 
-                        // bubble it up to the reactor’s OnReceived event.
+                        // Forward message events up to the reactor-level handler
                         serverParticle.OnReceived = OnReceived;
 
-                        // Attach the established link (shared ring buffers)
+                        // Attach the link (connects client ↔ server memory buffers)
                         serverParticle.AttachLink(link);
 
-                        // Store it in our client list and fire connected event
+                        // Add to our client list
                         if (_clients.TryAdd(id, serverParticle))
-                            ClientConnected?.Invoke(serverParticle);
+                            OnConnected?.Invoke(serverParticle);
                     }
 
-                    // Yield control briefly to avoid CPU spinning when idle
+                    // Avoid tight loop when idle (yield to scheduler)
                     await Task.Yield();
                 }
             }
             catch (OperationCanceledException)
             {
-                // Expected when shutting down
+                // Expected when stopping the reactor
             }
             catch (Exception ex)
             {
@@ -160,12 +178,13 @@ namespace Faster.Transport.Inproc
         }
 
         /// <summary>
-        /// Removes a client from the active list and disposes its resources.
+        /// Removes a disconnected client and disposes its resources.
         /// </summary>
+        /// <param name="id">The client ID to remove.</param>
         private void RemoveClient(int id)
         {
-            if (_clients.TryRemove(id, out var p))
-                p.Dispose();
+            if (_clients.TryRemove(id, out var particle))
+                particle.Dispose();
         }
 
         #endregion
@@ -173,19 +192,27 @@ namespace Faster.Transport.Inproc
         #region Cleanup
 
         /// <summary>
-        /// Stops the reactor, disconnects all clients, and releases resources.
+        /// Stops the reactor and disconnects all active clients.
+        /// </summary>
+        public void Stop()
+        {
+            Dispose();
+        }
+
+        /// <summary>
+        /// Releases all resources, disconnects clients, and unregisters this reactor.
         /// </summary>
         public void Dispose()
         {
             _cts.Cancel();
 
-            // Dispose all active client connections
+            // Disconnect all connected clients
             foreach (var kv in _clients)
                 kv.Value.Dispose();
 
             _clients.Clear();
 
-            // Unregister this reactor so no new clients can connect
+            // Remove this reactor from the global registry so no new clients connect
             InprocRegistry.UnregisterHub(_name, this);
 
             _cts.Dispose();

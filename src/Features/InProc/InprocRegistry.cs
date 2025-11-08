@@ -32,11 +32,11 @@ namespace Faster.Transport.Inproc
         /// Clients can later connect to this reactor using <see cref="Connect"/>.
         /// </summary>
         /// <param name="name">Unique reactor name (case-sensitive).</param>
-        /// <param name="hub">The reactor instance to register.</param>
+        /// <param name="reactor">The reactor instance to register.</param>
         /// <exception cref="InvalidOperationException">Thrown if a reactor with the same name is already registered.</exception>
-        public static void RegisterHub(string name, InprocReactor hub)
+        public static void RegisterHub(string name, InprocReactor reactor)
         {
-            if (!_hubs.TryAdd(name, hub))
+            if (!_hubs.TryAdd(name, reactor))
                 throw new InvalidOperationException($"InprocReactor '{name}' is already registered.");
         }
 

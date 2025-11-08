@@ -1,10 +1,101 @@
-﻿using System;
+﻿using Faster.Transport.Contracts;
+using Faster.Transport.Primitives;
+using System;
 using System.IO.MemoryMappedFiles;
 using System.Text;
-using System.Threading;
 
 namespace Faster.Transport.Ipc
 {
+    /// <summary>
+    /// Base class for memory-mapped IPC transport participants (<see cref="MappedParticle"/> or server-side handlers).
+    /// Provides common send/receive logic over two <see cref="MappedChannel"/> instances (RX/TX).
+    /// </summary>
+    /// <remarks>
+    /// The base class handles:
+    /// <list type="bullet">
+    ///   <item>Thread-safe sending through the TX channel.</item>
+    ///   <item>Frame forwarding via the RX channel using <see cref="OnReceived"/>.</item>
+    ///   <item>Connection lifecycle events (<see cref="OnConnected"/> / <see cref="OnDisconnected"/>).</item>
+    /// </list>
+    /// </remarks>
+    public abstract class MappedParticleBase : IParticle
+    {
+        /// <summary>
+        /// The receive channel (server → client direction).
+        /// </summary>
+        protected readonly MappedChannel _rx;
+
+        /// <summary>
+        /// The transmit channel (client → server direction).
+        /// </summary>
+        protected readonly MappedChannel _tx;
+
+        /// <inheritdoc/>
+        public Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
+
+        /// <inheritdoc/>
+        public Action<IParticle>? OnDisconnected { get; set; }
+
+        /// <inheritdoc/>
+        public Action<IParticle>? OnConnected { get; set; }
+
+        /// <summary>
+        /// Initializes a new base IPC participant using the provided RX/TX channels.
+        /// </summary>
+        /// <param name="rx">The inbound (read) channel.</param>
+        /// <param name="tx">The outbound (write) channel.</param>
+        protected MappedParticleBase(MappedChannel rx, MappedChannel tx)
+        {
+            _rx = rx;
+            _tx = tx;
+        }
+
+        private void OnRxFrame(ReadOnlyMemory<byte> mem)
+            => OnReceived?.Invoke(this, mem);
+
+        /// <summary>
+        /// Starts the receive loop and triggers the <see cref="OnConnected"/> event.
+        /// </summary>
+        public virtual void Start()
+        {
+            _rx.Start();
+            // Wire RX frames directly to OnReceived to minimize allocations
+            _rx.OnFrame += payload => OnReceived?.Invoke(this, payload);
+            OnConnected?.Invoke(this);
+        }
+
+        /// <inheritdoc/>
+        public void Send(ReadOnlySpan<byte> payload)
+        {
+            if (payload.Length == 0) 
+            {
+                return;
+            }
+
+            _tx.Send(payload);
+        }
+
+        /// <inheritdoc/>
+        public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
+        {
+            if (payload.Length == 0)
+            {
+                return TaskCompat.CompletedValueTask;
+            }
+
+            _tx.Send(payload.Span);
+            return TaskCompat.CompletedValueTask;
+        }
+
+        /// <inheritdoc/>
+        public virtual void Dispose()
+        {
+            _rx.Dispose();
+            _tx.Dispose();
+            OnDisconnected?.Invoke(this);
+        }
+    }
+
     /// <summary>
     /// Represents a single IPC (Inter-Process Communication) client that connects
     /// to a <see cref="MappedReactor"/> (server) using shared memory.
@@ -14,7 +105,7 @@ namespace Faster.Transport.Ipc
     /// <list type="bullet">
     ///   <item>Creates its own pair of memory-mapped files for <b>C2S</b> (client-to-server) and <b>S2C</b> (server-to-client) communication.</item>
     ///   <item>Registers itself in a shared registry file so that the server can detect and attach to it.</item>
-    ///   <item>Uses <see cref="DirectionalChannel"/> to handle message sending and receiving.</item>
+    ///   <item>Uses <see cref="MappedChannel"/> to handle message sending and receiving.</item>
     /// </list>
     /// The design allows multiple clients to connect to the same server process with near-zero latency.
     /// </remarks>
@@ -52,14 +143,14 @@ namespace Faster.Transport.Ipc
         /// </remarks>
         public MappedParticle(string baseName, ulong clientId, bool global = false, int ringBytes = 128 + (1 << 20))
             : base(
-                // Create inbound (server → client) channel
-                rx: new DirectionalChannel($"{(global ? "Global" : "Local")}\\{baseName}.S2C.{clientId:X16}.map",
+                // Inbound (server → client)
+                rx: new MappedChannel($"{(global ? "Global" : "Local")}\\{baseName}.S2C.{clientId:X16}.map",
                                            evName: null, totalBytes: ringBytes,
                                            create: true, isReader: true,
                                            rxThreadName: $"cli-rx:{clientId:X16}", useEvent: false),
 
-                // Create outbound (client → server) channel
-                tx: new DirectionalChannel($"{(global ? "Global" : "Local")}\\{baseName}.C2S.{clientId:X16}.map",
+                // Outbound (client → server)
+                tx: new MappedChannel($"{(global ? "Global" : "Local")}\\{baseName}.C2S.{clientId:X16}.map",
                                            evName: null, totalBytes: ringBytes,
                                            create: true, isReader: false,
                                            rxThreadName: null, useEvent: false))
@@ -100,21 +191,20 @@ namespace Faster.Transport.Ipc
             using var view = reg.CreateViewAccessor(0, 64 * 1024, MemoryMappedFileAccess.ReadWrite);
             using var mutex = new Mutex(false, regMtx);
 
-            // Lock the registry so only one client writes at a time
+            // Lock registry during write
             mutex.WaitOne();
             try
             {
                 var buf = new byte[64 * 1024];
                 view.ReadArray(0, buf, 0, buf.Length);
 
-                // Find the first zero byte (end of text data)
+                // Find the first zero byte (end of written data)
                 int len = Array.IndexOf(buf, (byte)0);
                 if (len < 0) len = buf.Length;
 
-                // Prepare new entry (hex client ID + newline)
+                // Append new client entry (hex ID + newline)
                 var add = Encoding.ASCII.GetBytes(_clientId.ToString("X16") + "\n");
 
-                // Append to the registry if space is available
                 if (len + add.Length <= buf.Length)
                 {
                     Array.Copy(add, 0, buf, len, add.Length);
@@ -123,7 +213,7 @@ namespace Faster.Transport.Ipc
             }
             finally
             {
-                // Always release the mutex even if an exception occurs
+                // Always release the mutex
                 mutex.ReleaseMutex();
             }
         }

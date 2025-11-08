@@ -1,255 +1,307 @@
 ﻿using Faster.Transport.Contracts;
 using Faster.Transport.Primitives;
 using System;
-using System.Buffers;
-using System.Drawing;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
+using System.Threading;
 
-namespace Faster.Transport.Inproc;
-
-/// <summary>
-/// In-process particle optimized for extreme performance.
-/// - No per-message allocs
-/// - Dedicated RX thread with batched draining
-/// - Fixed back-buffer ring to avoid overwrite
-/// </summary>
-public sealed class InprocParticle : IParticle, IDisposable
+namespace Faster.Transport.Inproc
 {
-    #region Fields
-
-    private readonly string _name;
-    private readonly bool _isServer;
-    private readonly int _ringCapacity;
-
-    private InprocLink? _link;
-
-    // RX thread
-    private Thread? _rxThread;
-    private volatile bool _running;
-
-    // Fixed back-buffer ring (avoids ArrayPool churn & reuse hazards)
-    private readonly byte[][] _buffers;
-    private int _bufIndex;
-
-    // Tunables
-    private readonly int _bufSize;
-    private readonly int _bufferCount;
-    private readonly int _batchMax;
-
-    private volatile bool _isDisposed;
-
-    #endregion
-
-    #region Events
-
-    public Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
-    public Action<IParticle>? OnDisconnected { get; set; }
-    public Action<IParticle>? OnConnected { get; set; }
-
-    #endregion
-
-    #region Ctor
-
-    public InprocParticle(
-        string name,
-        bool isServer,
-        int ringCapacity = 4096,
-        int backBufferCount = 8,
-        int bufferSize = 64 * 1024,
-        int batchMax = 32,
-        ThreadPriority rxThreadPriority = ThreadPriority.Highest)
+    /// <summary>
+    /// In-process communication endpoint using lock-free MPSC queues with hybrid event-driven polling.
+    /// Extremely low latency, zero allocations, and minimal CPU overhead.
+    /// </summary>
+    public sealed class InprocParticle : IParticle, IDisposable
     {
-        if (backBufferCount < 2) backBufferCount = 2;
+        #region === FastBufferPool ===
 
-        _name = name ?? throw new ArgumentNullException(nameof(name));
-        _isServer = isServer;
-        _ringCapacity = ringCapacity;
-
-        _bufferCount = backBufferCount;
-        _bufSize = bufferSize;
-        _batchMax = batchMax;
-
-        _buffers = new byte[_bufferCount][];
-        for (int i = 0; i < _bufferCount; i++)
-            _buffers[i] = new byte[_bufSize];
-
-        _rxThread = new Thread(ReceiveLoop)
+        internal static class FastBufferPool
         {
-            IsBackground = true,
-            Name = $"{(_isServer ? "inproc-srv" : "inproc-cli")}-rx:{_name}",
-            Priority = rxThreadPriority
-        };
-    }
+            [ThreadStatic]
+            private static Stack<byte[]>[]? _buckets;
 
-    #endregion
+            private static readonly int[] Sizes = { 128, 512, 2048, 8192, 32768 };
+            private const int MaxPerBucket = 64;
 
-    #region Link
-
-    internal void AttachLink(InprocLink link)
-    {
-        if (_isDisposed) throw new ObjectDisposedException(nameof(InprocParticle));
-        _link = link ?? throw new ArgumentNullException(nameof(link));
-        StartRx();
-        OnConnected?.Invoke(this);
-    }
-
-    #endregion
-
-    #region Start/Stop
-
-    public void Start()
-    {
-        if (_isDisposed) throw new ObjectDisposedException(nameof(InprocParticle));
-
-        if (!_isServer)
-        {
-            var link = InprocRegistry.Connect(_name, _ringCapacity);
-            _link = link;
-        }
-
-        StartRx();
-        OnConnected?.Invoke(this);
-    }
-
-    private void StartRx()
-    {
-        if (_running) return;
-        _running = true;
-        _rxThread?.Start();
-    }
-
-    #endregion
-
-    #region Send
-
-    public void SendF(ReadOnlyMemory<byte> payload)
-    {
-        if (payload.Length == 0) return;
-        if (_isDisposed) throw new ObjectDisposedException(nameof(InprocParticle));
-        var link = _link ?? throw new InvalidOperationException("Not connected.");
-
-        var ring = _isServer ? link.ToClient : link.ToServer;
-        int spinExp = 1;
-
-        while (!ring.TryEnqueue(payload))
-        {
-            Thread.SpinWait(spinExp);
-            spinExp = spinExp < 4096 ? (spinExp << 1) : 4096;
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Send(ReadOnlySpan<byte> payload)
-    {
-        if (payload.Length == 0) return;
-        if (_isDisposed) throw new ObjectDisposedException(nameof(InprocParticle));
-        var link = _link ?? throw new InvalidOperationException("Not connected.");
-
-        var ring = _isServer ? link.ToClient : link.ToServer;
-
-        // Fallback: rent a temporary array since ReadOnlySpan -> ReadOnlyMemory can't be zero-copy.
-        byte[] rented = ArrayPool<byte>.Shared.Rent(payload.Length);
-        try
-        {
-            payload.CopyTo(rented);
-            var memory = new ReadOnlyMemory<byte>(rented, 0, payload.Length);
-
-            int spinExp = 1;
-            while (!ring.TryEnqueue(memory))
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private static Stack<byte[]>[] GetBuckets()
             {
-                Thread.SpinWait(spinExp);
-                spinExp = spinExp < 4096 ? (spinExp << 1) : 4096;
+                var b = _buckets;
+                if (b != null)
+                    return b;
+
+                b = new Stack<byte[]>[Sizes.Length];
+                for (int i = 0; i < b.Length; i++)
+                    b[i] = new Stack<byte[]>(MaxPerBucket);
+
+                _buckets = b;
+                return b;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private static int GetBucketIndex(int length)
+            {
+                for (int i = 0; i < Sizes.Length; i++)
+                    if (length <= Sizes[i])
+                        return i;
+                return -1;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public static byte[] Rent(int length)
+            {
+                var buckets = GetBuckets();
+                int idx = GetBucketIndex(length);
+                if (idx < 0)
+                    return new byte[length];
+
+                var stack = buckets[idx];
+                return stack.Count > 0 ? stack.Pop() : new byte[Sizes[idx]];
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public static void Return(byte[] buffer)
+            {
+                var buckets = GetBuckets();
+                int idx = GetBucketIndex(buffer.Length);
+                if (idx < 0)
+                    return;
+
+                var stack = buckets[idx];
+                if (stack.Count < MaxPerBucket)
+                    stack.Push(buffer);
             }
         }
-        finally
+
+        #endregion
+
+        #region === Fields / Events ===
+
+        private readonly string _name;
+        private readonly bool _isServer;
+        private readonly int _ringCapacity;
+
+        private InprocLink? _link;
+        private Thread? _rxThread;
+        private volatile bool _running;
+        private volatile bool _isDisposed;
+
+        private readonly AutoResetEvent _dataReady = new(false);
+
+        public Action<IParticle, ReadOnlyMemory<byte>>? OnReceived { get; set; }
+        public Action<IParticle>? OnDisconnected { get; set; }
+        public Action<IParticle>? OnConnected { get; set; }
+
+        #endregion
+
+        #region === Constructor ===
+
+        public InprocParticle(
+            string name,
+            bool isServer,
+            int ringCapacity = 4096,
+            ThreadPriority rxThreadPriority = ThreadPriority.Highest)
         {
-            ArrayPool<byte>.Shared.Return(rented);
+            _name = name ?? throw new ArgumentNullException(nameof(name));
+            _isServer = isServer;
+            _ringCapacity = ringCapacity;
+
+            _rxThread = new Thread(ReceiveLoop)
+            {
+                IsBackground = true,
+                Name = $"{(_isServer ? "inproc-srv" : "inproc-cli")}-rx:{_name}",
+                Priority = rxThreadPriority
+            };
         }
-    }
 
-    public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
-    {
-        Send(payload.Span);
-        return TaskCompat.CompletedValueTask;
-    }
+        #endregion
 
-    #endregion
+        #region === Linking / Start-Stop ===
 
-    #region RX loop
-
-    private void ReceiveLoop()
-    {
-        try
+        internal void AttachLink(InprocLink link)
         {
-            var link = _link;
-            while (link is null && _running)
+            if (_isDisposed)
+                throw new ObjectDisposedException(nameof(InprocParticle));
+
+            _link = link ?? throw new ArgumentNullException(nameof(link));
+
+            if (_isServer)
+                link.OnServerDataAvailable = () => _dataReady.Set();
+            else
+                link.OnClientDataAvailable = () => _dataReady.Set();
+
+            StartRx();
+            OnConnected?.Invoke(this);
+        }
+
+        public void Start()
+        {
+            if (_isDisposed)
+                throw new ObjectDisposedException(nameof(InprocParticle));
+
+            if (!_isServer)
             {
-                link = _link;
-                Thread.SpinWait(64);
+                var link = InprocRegistry.Connect(_name, _ringCapacity);
+                _link = link;
+
+                // assign proper wake-up callback
+                link.OnClientDataAvailable = () => _dataReady.Set();
             }
-            if (link is null) return;
 
-            var inbound = _isServer ? link.ToServer : link.ToClient;
-            int spinExp = 1;
+            StartRx();
+            OnConnected?.Invoke(this);
+        }
 
-            while (_running)
+        private void StartRx()
+        {
+            if (_running)
+                return;
+
+            _running = true;
+            _rxThread?.Start();
+        }
+
+        #endregion
+
+        #region === Sending ===
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Send(ReadOnlySpan<byte> payload)
+        {
+            if (payload.Length == 0)
+                return;
+
+            if (_isDisposed)
+                throw new ObjectDisposedException(nameof(InprocParticle));
+
+            var link = _link ?? throw new InvalidOperationException("Not connected.");
+            var ring = _isServer ? link.ToClient : link.ToServer;
+
+            var buf = FastBufferPool.Rent(payload.Length);
+            payload.CopyTo(buf);
+            var segment = new ArraySegment<byte>(buf, 0, payload.Length);
+
+            bool wasEmpty = ring.IsEmpty;
+            SpinWaitUntil(() => ring.TryEnqueue(segment));
+
+            // Notify the peer if queue transitioned from empty
+            if (wasEmpty)
             {
-                int delivered = 0;
+                if (_isServer)
+                    link.SignalClientPeer();
+                else
+                    link.SignalServerPeer();
+            }
+        }
 
-                while (delivered < _batchMax)
+        public ValueTask SendAsync(ReadOnlyMemory<byte> payload)
+        {
+            Send(payload.Span);
+            return TaskCompat.CompletedValueTask;
+        }
+
+        #endregion
+
+        #region === Receiving (Hybrid Event Loop) ===
+
+        private void ReceiveLoop()
+        {
+            try
+            {
+                var link = _link;
+                while (link is null && _running)
                 {
-                    var idx = _bufIndex;
-                    _bufIndex = (idx + 1) % _bufferCount;
-                    var buf = _buffers[idx];
-
-                    if (!inbound.TryDequeue(out var payload))
-                        break;
-
-                    OnReceived?.Invoke(this, payload);
-                    delivered++;
+                    link = _link;
+                    Thread.SpinWait(64);
                 }
 
-                if (delivered > 0)
-                {
-                    spinExp = 1;
-                    continue;
-                }
+                if (link is null)
+                    return;
 
-                Thread.SpinWait(spinExp);
-                if (spinExp < (1 << 12)) spinExp <<= 1;
+                var inbound = _isServer ? link.ToServer : link.ToClient;
+                int idleSpins = 0;
+
+                while (_running)
+                {
+                    bool gotMsg = false;
+
+                    // Drain all pending messages
+                    while (inbound.TryDequeue(out var seg))
+                    {
+                        gotMsg = true;
+                        OnReceived?.Invoke(this, new ReadOnlyMemory<byte>(seg.Array!, seg.Offset, seg.Count));
+
+                        if (seg.Array is not null)
+                            FastBufferPool.Return(seg.Array);
+                    }
+
+                    if (gotMsg)
+                    {
+                        idleSpins = 0;
+                        continue;
+                    }
+
+                    // Spin briefly, then block
+                    if (idleSpins < 64)
+                    {
+                        Thread.SpinWait(4 << idleSpins);
+                        idleSpins++;
+                    }
+                    else
+                    {
+                        _dataReady.WaitOne(1); // Sleep until data or timeout
+                        idleSpins = 0;
+                    }
+                }
+            }
+            catch
+            {
+                // swallow teardown exceptions
+            }
+            finally
+            {
+                try { OnDisconnected?.Invoke(this); } catch { }
             }
         }
-        catch
+
+        #endregion
+
+        #region === Helpers / Cleanup ===
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void SpinWaitUntil(Func<bool> condition)
         {
-            // keep teardown minimal
+            int spins = 0;
+            while (!condition())
+            {
+                if (spins < 64)
+                    Thread.SpinWait(4 << spins);
+                else
+                    Thread.Yield();
+                spins++;
+            }
         }
-        finally
+
+        public void Dispose()
         {
-            try { OnDisconnected?.Invoke(this); } catch { }
+            if (_isDisposed)
+                return;
+
+            _isDisposed = true;
+            _running = false;
+
+            _dataReady.Set(); // wake up blocked thread
+
+            if (_rxThread is not null && _rxThread.IsAlive)
+            {
+                if (!_rxThread.Join(TimeSpan.FromMilliseconds(200)))
+                    _rxThread.Interrupt();
+            }
+
+            _rxThread = null;
+            _link = null;
         }
+
+        #endregion
     }
-
-    #endregion
-
-    #region Dispose
-
-    public void Dispose()
-    {
-        if (_isDisposed) return;
-        _isDisposed = true;
-
-        _running = false;
-
-        if (_rxThread is not null && _rxThread.IsAlive)
-        {
-            if (!_rxThread.Join(TimeSpan.FromMilliseconds(200)))
-                _rxThread.Interrupt();
-        }
-
-        _rxThread = null;
-        _link = null;
-    }
-
-    #endregion
 }

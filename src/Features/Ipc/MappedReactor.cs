@@ -18,12 +18,12 @@ namespace Faster.Transport.Ipc
     /// </list>
     /// This design avoids sockets and serialization overhead by using zero-copy shared memory rings.
     /// </remarks>
-    public sealed class MappedReactor : IDisposable
+    public sealed class MappedReactor : IReactor, IDisposable
     {
         private readonly string _ns;
         private readonly string _base;
         private readonly int _ringBytes;
-        private readonly ConcurrentDictionary<ulong, ClientParticle> _clients = new();
+        private readonly ConcurrentDictionary<ulong, IParticle> _clients = new();
         private readonly Thread _registryThread;
         private volatile bool _running;
 
@@ -35,12 +35,7 @@ namespace Faster.Transport.Ipc
         /// <summary>
         /// Triggered when a new client connects (detected via the registry).
         /// </summary>
-        public Action<ulong>? OnConnected { get; set; }
-
-        /// <summary>
-        /// Triggered when a connected client disconnects or is disposed.
-        /// </summary>
-        public Action<ulong>? OnClientDisconnected { get; set; }
+        public Action<IParticle>? OnConnected { get; set; }
 
         /// <summary>
         /// Creates a new IPC reactor (server) instance.
@@ -68,6 +63,10 @@ namespace Faster.Transport.Ipc
         /// </summary>
         public void Start()
         {
+            if (_running)
+            {
+                return;
+            }
             _running = true;
             _registryThread.Start();
         }
@@ -106,17 +105,25 @@ namespace Faster.Transport.Ipc
                 foreach (var line in text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
                 {
                     if (!ulong.TryParse(line, System.Globalization.NumberStyles.HexNumber, null, out var id))
+                    {
                         continue;
+                    }
 
                     // Only attach once per client
                     if (seen.Add(id))
+                    {
                         TryAttachClient(id);
+                    }
                 }
 
                 Thread.Sleep(50);
             }
         }
 
+        /// <summary>
+        /// Attempts to attach to a registered client by opening its shared memory channels.
+        /// </summary>
+        /// <param name="id">Unique 64-bit client ID (as hex string in registry).</param>
         /// <summary>
         /// Attempts to attach to a registered client by opening its shared memory channels.
         /// </summary>
@@ -129,11 +136,11 @@ namespace Faster.Transport.Ipc
                 string s2cMap = _ns + $"{_base}.S2C.{id:X16}.map"; // server → client
 
                 // Each client has its own pair of shared memory rings.
-                var rx = new DirectionalChannel(c2sMap, evName: null, totalBytes: _ringBytes,
+                var rx = new MappedChannel(c2sMap, evName: null, totalBytes: _ringBytes,
                                                 create: false, isReader: true,
                                                 rxThreadName: $"srv-rx:{id:X16}", useEvent: false);
 
-                var tx = new DirectionalChannel(s2cMap, evName: null, totalBytes: _ringBytes,
+                var tx = new MappedChannel(s2cMap, evName: null, totalBytes: _ringBytes,
                                                 create: false, isReader: false,
                                                 rxThreadName: null, useEvent: false);
 
@@ -141,12 +148,12 @@ namespace Faster.Transport.Ipc
                 _clients[id] = particle;
 
                 particle.Start();
-              //  FasterIpcTrace.Info($"[Server] Client {id:X16} connected");
-                OnConnected?.Invoke(id);
+                //  FasterIpcTrace.Info($"[Server] Client {id:X16} connected");
+                OnConnected?.Invoke(particle);
             }
             catch (Exception ex)
             {
-             //   FasterIpcTrace.Warn($"[Server] Attach failed for {id:X16}: {ex.Message}");
+                //   FasterIpcTrace.Warn($"[Server] Attach failed for {id:X16}: {ex.Message}");
             }
         }
 
@@ -156,7 +163,9 @@ namespace Faster.Transport.Ipc
         public void Send(ulong id, ReadOnlySpan<byte> payload)
         {
             if (_clients.TryGetValue(id, out var p))
+            {
                 p.Send(payload);
+            }
         }
 
         /// <summary>
@@ -171,42 +180,48 @@ namespace Faster.Transport.Ipc
         }
 
         /// <summary>
-        /// Represents a single connected client’s communication channel within the reactor.
-        /// </summary>
-        private sealed class ClientParticle : MappedParticleBase
-        {
-            private readonly ulong _id;
-            private readonly MappedReactor _owner;
-
-            public ClientParticle(DirectionalChannel rx, DirectionalChannel tx, ulong id, MappedReactor owner)
-                : base(rx, tx)
-            {
-                _id = id;
-                _owner = owner;
-
-                // Forward messages to the reactor’s OnReceived callback.
-                OnReceived += (self, data) => _owner.OnReceived?.Invoke(self, data);
-            }
-
-            /// <summary>
-            /// Cleans up resources and notifies the reactor that the client disconnected.
-            /// </summary>
-            public override void Dispose()
-            {
-                base.Dispose();
-                _owner.OnClientDisconnected?.Invoke(_id);
-            }
-        }
-
-        /// <summary>
         /// Stops the reactor and cleans up all client connections.
         /// </summary>
         public void Dispose()
         {
             _running = false;
             foreach (var c in _clients.Values)
+            {
                 c.Dispose();
+            }
             _clients.Clear();
+        }
+
+        public void Stop()
+        {
+            Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Represents a single connected client’s communication channel within the reactor.
+    /// </summary>
+    sealed class ClientParticle : MappedParticleBase
+    {
+        private readonly ulong _id;
+        private readonly MappedReactor _owner;
+
+        public ClientParticle(MappedChannel rx, MappedChannel tx, ulong id, MappedReactor owner)
+            : base(rx, tx)
+        {
+            _id = id;
+            _owner = owner;
+
+            // Forward messages to the reactor’s OnReceived callback.
+            OnReceived += (self, data) => _owner.OnReceived?.Invoke(self, data);
+        }
+
+        /// <summary>
+        /// Cleans up resources and notifies the reactor that the client disconnected.
+        /// </summary>
+        public override void Dispose()
+        {
+            base.Dispose();
         }
     }
 }

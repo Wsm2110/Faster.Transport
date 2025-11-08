@@ -1,20 +1,20 @@
 # 🚀 Faster.Transport — High-Performance Transport Framework for .NET
 
 > **Unified Real-Time Transport Layer for .NET 6–9 Applications**  
-> Fastest way to build **zero-copy**, **low-latency**, **full-duplex** communication across **TCP, UDP, IPC**, and **In-Process** backends.
+> The fastest way to build **zero-copy**, **low-latency**, **full-duplex** communication across **TCP, UDP, IPC**, and **In-Process** backends.
 
-`Faster.Transport` delivers a single unified abstraction — **`IParticle`** — for all transport modes:
+`Faster.Transport` delivers a unified abstraction — **`IParticle`** — that powers all modes:
 
-- 🧠 **Inproc** – ultra-fast in-memory messaging inside a single process  
-- 🧩 **IPC (Inter-Process Communication)** – high-speed shared-memory transport  
+- 🧠 **Inproc** – ultra-fast in-memory messaging within one process  
+- 🧩 **IPC** – shared-memory communication across processes  
 - ⚡ **TCP** – reliable, framed, full-duplex network transport  
-- 📡 **UDP** – multicast, broadcast, and real-time datagram transport  
+- 📡 **UDP** – lightweight, multicast-capable datagram transport  
 
-✅ All transports share:
-- Unified **async APIs**
+✅ All transport modes share:
+- Unified **async + sync APIs**
 - **Zero-allocation send/receive**
 - **Zero-copy buffer reuse**
-- Consistent event-driven model
+- **Consistent event-driven model**
 
 ---
 
@@ -22,10 +22,10 @@
 
 | Transport | Description | Best Use | Backing Technology |
 |------------|-------------|-----------|--------------------|
-| 🧠 **Inproc** | In-memory transport for subsystems within one process | Internal pipelines, game engines | Lock-free ring buffer |
-| 🧩 **IPC** | Cross-process communication via shared memory | Multi-process backends, simulators | Memory-mapped files + SPSC rings |
-| ⚡ **TCP** | Reliable, ordered, framed byte stream | External client/server comms | Async Sockets (length-prefixed frames) |
-| 📡 **UDP** | Lightweight, low-latency datagram transport | Real-time telemetry, broadcast, multicast | Datagram sockets with multicast groups |
+| 🧠 **Inproc** | In-memory transport within a single process | Internal pipelines, subsystems | Lock-free MPSC queue |
+| 🧩 **IPC** | Cross-process shared-memory transport | Multi-process backends | Memory-mapped files + SPSC rings |
+| ⚡ **TCP** | Reliable, ordered, framed byte stream | External services, LAN/WAN | Async Sockets (length-prefixed frames) |
+| 📡 **UDP** | Lightweight, low-latency datagrams | Telemetry, discovery, broadcast | Datagram sockets with multicast |
 
 ---
 
@@ -45,65 +45,62 @@ public interface IParticle : IDisposable
 }
 ```
 
-All modes — TCP, UDP, IPC, and Inproc — share this exact API.
+All modes (TCP, UDP, IPC, Inproc) share this exact API and semantics.
 
 ---
 
-## ⚙️ Building Transports with `ParticleBuilder`
+## ⚙️ Builders Overview
 
-`ParticleBuilder` provides a unified fluent API to construct any transport — client or server.
+There are **two primary builders**:
 
-```csharp
-var particle = new ParticleBuilder()
-    .UseMode(TransportMode.Tcp)
-    .WithRemote(new IPEndPoint(IPAddress.Loopback, 9000))
-    .OnConnected(p => Console.WriteLine("Connected!"))
-    .OnReceived((p, data) => Console.WriteLine($"Received {data.Length} bytes"))
-    .Build();
-```
+| Builder | Role | Description |
+|----------|------|-------------|
+| 🧱 `ReactorBuilder` | Server | Creates a multi-client server “reactor” that spawns `IParticle` peers automatically. |
+| ⚙️ `ParticleBuilder` | Client | Creates a single transport client for any mode (TCP, UDP, IPC, Inproc). |
+
+Both share the same fluent configuration API.
 
 ---
 
 ## ⚡ TCP Examples
 
-### 🧠 TCP Client
+### 🧱 TCP Server (Reactor)
+
+```csharp
+var server = new ReactorBuilder()
+    .UseMode(TransportMode.Tcp)
+    .WithLocal(new IPEndPoint(IPAddress.Any, 9500))
+    .OnConnected(p => Console.WriteLine("🟢 Client connected"))
+    .OnReceived((p, msg) =>
+    {
+        Console.WriteLine($"Server received: {Encoding.UTF8.GetString(msg.Span)}");
+        p.Send("Echo"u8.ToArray());
+    })
+    .Build();
+
+server.Start();
+Console.WriteLine("✅ TCP server running on port 9500");
+```
+
+### ⚙️ TCP Client
 
 ```csharp
 var client = new ParticleBuilder()
     .UseMode(TransportMode.Tcp)
     .WithRemote(new IPEndPoint(IPAddress.Loopback, 9500))
-    .OnConnected(p => Console.WriteLine("✅ TCP connected"))
+    .OnConnected(p => Console.WriteLine("✅ Connected to TCP server"))
     .OnReceived((p, msg) =>
-        Console.WriteLine($"📩 TCP: {Encoding.UTF8.GetString(msg.Span)}"))
+        Console.WriteLine($"📩 {Encoding.UTF8.GetString(msg.Span)}"))
     .Build();
 
-await client.SendAsync(Encoding.UTF8.GetBytes("Hello TCP!"));
+await client.SendAsync("Hello TCP!"u8.ToArray());
 ```
 
-### 🧱 TCP Server (Reactor Mode)
-
-```csharp
-var server = new ParticleBuilder()
-    .UseMode(TransportMode.Tcp)
-    .AsServer(true)
-    .WithLocal(new IPEndPoint(IPAddress.Any, 9500))
-    .OnConnected(p => Console.WriteLine("🟢 Client connected"))
-    .OnReceived((p, msg) =>
-    {
-        Console.WriteLine($"Server got: {Encoding.UTF8.GetString(msg.Span)}");
-        p.Send("Echo"u8.ToArray());
-    })
-    .Build();
-```
-
-💡 The TCP server uses the **high-performance `Reactor`** architecture —  
-zero allocations, async accept loop, and automatic per-client `Particle` management.
+💡 `ReactorBuilder` manages client lifetimes; each new connection spawns a dedicated `IParticle`.
 
 ---
 
-## 📡 UDP Example — Full-Duplex Mode
-
-Single socket handles both send and receive operations efficiently.
+## 📡 UDP Example (Full Duplex)
 
 ```csharp
 var port = 9700;
@@ -113,19 +110,17 @@ var udp = new ParticleBuilder()
     .WithLocal(new IPEndPoint(IPAddress.Any, port))
     .WithRemote(new IPEndPoint(IPAddress.Loopback, port))
     .AllowBroadcast(true)
-    .OnConnected(p => Console.WriteLine("UDP ready"))
+    .OnConnected(p => Console.WriteLine("📡 UDP ready"))
     .OnReceived((p, msg) =>
         Console.WriteLine($"📨 {Encoding.UTF8.GetString(msg.Span)}"))
     .Build();
 
-await udp.SendAsync(Encoding.UTF8.GetBytes("Ping via UDP!"));
+await udp.SendAsync("Ping via UDP!"u8.ToArray());
 ```
 
 ---
 
 ## 🌍 UDP Multicast Example
-
-Broadcast to all peers in a multicast group — perfect for telemetry or discovery.
 
 ```csharp
 var group = IPAddress.Parse("239.0.0.123");
@@ -139,22 +134,22 @@ var peer = new ParticleBuilder()
         Console.WriteLine($"📩 {Encoding.UTF8.GetString(msg.Span)}"))
     .Build();
 
-await peer.SendAsync(Encoding.UTF8.GetBytes("Hello multicast group!"));
+await peer.SendAsync("Hello multicast group!"u8.ToArray());
 ```
 
-💡 Use `disableLoopback: true` to prevent receiving your own packets.
+💡 Use `disableLoopback: true` to suppress receiving your own datagrams.
 
 ---
 
 ## 🧠 In-Process (Inproc) Example
 
-Super-fast in-memory message passing (no kernel overhead).
+Ultra-low-latency in-memory communication within the same process (no syscalls).
 
 ```csharp
 // Server
-var server = new ParticleBuilder()
+var server = new ReactorBuilder()
     .UseMode(TransportMode.Inproc)
-    .WithChannel("demo", isServer: true)
+    .WithChannel("demo")
     .OnReceived((p, msg) =>
     {
         Console.WriteLine($"[Server] {Encoding.UTF8.GetString(msg.Span)}");
@@ -167,23 +162,26 @@ var client = new ParticleBuilder()
     .UseMode(TransportMode.Inproc)
     .WithChannel("demo")
     .OnReceived((p, msg) =>
-        Console.WriteLine($"[Client] Reply: {Encoding.UTF8.GetString(msg.Span)}"))
+        Console.WriteLine($"[Client] {Encoding.UTF8.GetString(msg.Span)}"))
     .Build();
 
+server.Start();
 await client.SendAsync("Ping"u8.ToArray());
 ```
+
+💡 Inproc mode uses a **lock-free MPSC queue** with hybrid event-driven polling.
 
 ---
 
 ## 🧩 IPC Example — Cross-Process Messaging
 
-High-speed interprocess communication using shared memory and SPSC rings.
+High-performance interprocess communication using **shared memory** and **ring buffers**.
 
 ```csharp
 // Server
-var server = new ParticleBuilder()
+var server = new ReactorBuilder()
     .UseMode(TransportMode.Ipc)
-    .WithChannel("shared-mem", isServer: true)
+    .WithChannel("shared-mem")
     .OnReceived((p, msg) =>
     {
         Console.WriteLine($"[Server] {Encoding.UTF8.GetString(msg.Span)}");
@@ -199,8 +197,11 @@ var client = new ParticleBuilder()
         Console.WriteLine($"[Client] Got: {Encoding.UTF8.GetString(msg.Span)}"))
     .Build();
 
+server.Start();
 await client.SendAsync("Hi IPC!"u8.ToArray());
 ```
+
+💡 IPC mode uses **shared memory + SPSC ring buffers** and supports multiple clients per reactor.
 
 ---
 
@@ -208,20 +209,20 @@ await client.SendAsync("Hi IPC!"u8.ToArray());
 
 | Method | Description |
 |--------|-------------|
-| `.UseMode(TransportMode)` | Selects transport backend |
-| `.AsServer(bool)` | Enables server mode (TCP, IPC, or Inproc) |
-| `.WithLocal(IPEndPoint)` | Sets the local bind address |
-| `.WithRemote(IPEndPoint)` | Sets the remote endpoint |
-| `.WithMulticast(IPAddress, int, bool)` | Joins a UDP multicast group |
-| `.AllowBroadcast(bool)` | Enables UDP broadcast |
-| `.WithChannel(string, bool)` | Sets the channel name (IPC/Inproc) |
-| `.WithBufferSize(int)` | Configures per-connection buffer size |
-| `.WithParallelism(int)` | Controls async send parallelism |
-| `.WithTcpBacklog(int)` | Sets TCP server backlog size |
-| `.WithAutoReconnect(double, double)` | Enables exponential reconnect retry |
-| `.OnReceived(Action<IParticle, ReadOnlyMemory<byte>>)` | Handler for incoming data |
-| `.OnConnected(Action<IParticle>)` | Invoked when ready or connected |
-| `.OnDisconnected(Action<IParticle>)` | Invoked when closed/disconnected |
+| `.UseMode(TransportMode)` | Select transport backend (TCP, UDP, IPC, Inproc) |
+| `.AsServer(bool)` | Explicitly mark as server (alternative to `ReactorBuilder`) |
+| `.WithLocal(IPEndPoint)` | Bind address for TCP/UDP |
+| `.WithRemote(IPEndPoint)` | Remote endpoint for TCP/UDP |
+| `.WithMulticast(IPAddress, int, bool)` | Join a UDP multicast group |
+| `.AllowBroadcast(bool)` | Enable UDP broadcast |
+| `.WithChannel(string, bool)` | Channel name for IPC/Inproc |
+| `.WithBufferSize(int)` | Per-connection buffer size |
+| `.WithParallelism(int)` | Control async send parallelism |
+| `.WithTcpBacklog(int)` | TCP backlog size |
+| `.WithAutoReconnect(double, double)` | Automatic reconnect (minDelay, maxDelay in seconds) |
+| `.OnReceived(Action<IParticle, ReadOnlyMemory<byte>>)` | Message handler |
+| `.OnConnected(Action<IParticle>)` | Connection established |
+| `.OnDisconnected(Action<IParticle>)` | Connection closed |
 
 ---
 
@@ -229,13 +230,13 @@ await client.SendAsync("Hi IPC!"u8.ToArray());
 
 | Transport | Scenario | Messages | Mean | Allocated | Notes |
 |------------|-----------|----------|------|------------|-------|
-| 🧠 **Inproc** | 10k async messages | 10 000 | **0.8 ms 🏆** | 956 KB | Lock-free ring buffer |
+| 🧠 **Inproc** | 10k async messages | 10 000 | **0.8 ms 🏆** | 956 KB | Lock-free MPSC queue |
 | 🧩 **IPC** | 10k async messages | 10 000 | 1.8 ms | 184 B | Shared memory (MMF) |
 | ⚡ **TCP** | 10k async messages | 10 000 | 76.8 ms | 1.3 MB | SAEA framed protocol |
 | 📡 **UDP (Unicast)** | 10k datagrams | 10 000 | 92.8 ms | 1.6 MB | Datagram sockets |
 | 📡 **UDP (Multicast)** | 10k datagrams | 10 000 | 502.2 ms | 1.6 MB | Multicast group |
 
-All benchmarks executed using **BenchmarkDotNet** on **.NET 9.0**  
+Tested with **BenchmarkDotNet** on **.NET 9.0**,  
 CPU: AMD Ryzen 9 5950X | 64 GB DDR4 | Windows 11 x64
 
 ---
@@ -243,9 +244,9 @@ CPU: AMD Ryzen 9 5950X | 64 GB DDR4 | Windows 11 x64
 ## 🔍 Keywords for Developers
 
 **Tags:**  
-`.NET transport layer`, `.NET networking`, `zero-copy IPC`, `shared memory communication`,  
-`low latency TCP`, `UDP multicast broadcast`, `async sockets`,  
-`real-time telemetry`, `message bus`, `lock-free ring buffer`, `C# networking library`
+`.NET transport layer`, `zero-copy IPC`, `shared memory`,  
+`low latency TCP`, `UDP multicast`, `async sockets`,  
+`real-time telemetry`, `lock-free ring buffer`, `C# networking`
 
 **Use Cases:**  
 Real-time trading · Game networking · Simulation · Distributed telemetry · Robotics · HFT systems
@@ -255,4 +256,4 @@ Real-time trading · Game networking · Simulation · Distributed telemetry · R
 ## 🧾 License
 
 MIT © 2025 — **Faster.Transport** Team  
-Optimized for **real-time**, **low-latency**, **high-throughput** distributed systems.
+Optimized for **real-time**, **low-latency**, and **high-throughput** distributed systems.

@@ -1,11 +1,6 @@
-using System;
 using System.ComponentModel;
-using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
-using System.Security.AccessControl;
-using System.Security.Principal;
-using System.Threading;
 
 namespace Faster.Transport.Ipc
 {
@@ -20,10 +15,7 @@ namespace Faster.Transport.Ipc
     /// try to create or open the same shared objects at startup.
     /// </remarks>
     internal static class MmfHelper
-    {
-
-        // Fix 4: If you need security on Windows with .NET 5+, use P/Invoke
-
+    {    
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         private static extern IntPtr CreateFileMapping(
             IntPtr hFile,

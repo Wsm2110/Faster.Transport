@@ -6,300 +6,371 @@ using Faster.Transport.Ipc;
 using System.Net;
 using System.Net.Sockets;
 
-namespace Faster.Transport;
-
-public enum TransportMode
+namespace Faster.Transport
 {
-    Inproc,
-    Ipc,
-    Tcp,
-    Udp
-}
-
-/// <summary>
-/// Fluent builder for constructing <see cref="IParticle"/> clients or servers.
-/// Now supports building a TCP server reactor.
-/// </summary>
-public sealed class ParticleBuilder
-{
-    // General configuration
-    private TransportMode _mode = TransportMode.Tcp;
-    private IPEndPoint? _remoteEndPoint;
-    private IPEndPoint? _localEndPoint;
-    private Socket? _acceptedSocket;
-    private string? _channelName;
-    private bool _isServer;
-
-    // TCP server options
-    private int _backlog = 1024;
-
-    // Performance options
-    private int _bufferSize = 8192;
-    private int _parallelism = 8;
-    private int _ringCapacity = 128 + (1 << 20);
-
-    // UDP options
-    private bool _allowBroadcast;
-    private bool _disableLoopback = true;
-    private IPAddress? _multicastGroup;
-    private int _multicastPort;
-
-    // Auto-reconnect
-    private bool _autoReconnect;
-    private TimeSpan _baseDelay = TimeSpan.FromSeconds(1);
-    private TimeSpan _maxDelay = TimeSpan.FromSeconds(30);
-
-    // Event handlers
-    private Action<IParticle, ReadOnlyMemory<byte>>? _onReceived;
-    private Action<IParticle>? _onDisconnected;
-    private Action<IParticle>? _onConnected;
-
-    #region === Fluent Configuration ===
-
-    public ParticleBuilder UseMode(TransportMode mode)
+    /// <summary>
+    /// Specifies the available communication modes.
+    /// </summary>
+    public enum TransportMode
     {
-        _mode = mode;
-        return this;
+        /// <summary>
+        /// Communication within the same process (no network, fastest).
+        /// </summary>
+        Inproc,
+
+        /// <summary>
+        /// Communication between processes on the same machine using shared memory.
+        /// </summary>
+        Ipc,
+
+        /// <summary>
+        /// Standard TCP/IP network communication (reliable, ordered).
+        /// </summary>
+        Tcp,
+
+        /// <summary>
+        /// UDP communication (fast but unreliable).
+        /// </summary>
+        Udp
     }
 
-    public ParticleBuilder WithRemote(IPEndPoint endpoint)
+    /// <summary>
+    /// A fluent builder for creating <see cref="IParticle"/> clients.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <see cref="ParticleBuilder"/> helps you create high-performance network clients
+    /// using a simple and consistent syntax.
+    /// You can choose between:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><see cref="TransportMode.Inproc"/> → same-process communication</item>
+    ///   <item><see cref="TransportMode.Ipc"/> → inter-process communication (shared memory)</item>
+    ///   <item><see cref="TransportMode.Tcp"/> → reliable network communication</item>
+    ///   <item><see cref="TransportMode.Udp"/> → low-latency datagrams</item>
+    /// </list>
+    ///
+    /// This builder is **client-only** — server creation is handled separately (for example, by <c>ReactorBuilder</c>).
+    /// </remarks>
+    public sealed class ParticleBuilder
     {
-        _remoteEndPoint = endpoint;
-        _acceptedSocket = null;
-        return this;
-    }
+        #region === Configuration Fields ===
 
-    public ParticleBuilder WithLocal(IPEndPoint endpoint)
-    {
-        _localEndPoint = endpoint;
-        return this;
-    }
+        // Selected transport type (default = TCP)
+        private TransportMode _mode = TransportMode.Tcp;
 
-    public ParticleBuilder FromAcceptedSocket(Socket socket)
-    {
-        _mode = TransportMode.Tcp;
-        _acceptedSocket = socket;
-        return this;
-    }
+        // Network endpoints for TCP/UDP
+        private IPEndPoint? _remoteEndPoint;
+        private IPEndPoint? _localEndPoint;
 
-    public ParticleBuilder WithChannel(string name, bool isServer = false)
-    {
-        _channelName = name;
-        _isServer = isServer;
-        return this;
-    }
+        // Socket provided by a TCP acceptor (used for accepted connections)
+        private Socket? _acceptedSocket;
 
-    public ParticleBuilder WithBufferSize(int bytes)
-    {
-        _bufferSize = bytes;
-        return this;
-    }
+        // Shared channel name (used by IPC and Inproc modes)
+        private string? _channelName;
 
-    public ParticleBuilder WithParallelism(int degree)
-    {
-        _parallelism = degree;
-        return this;
-    }
+        // Performance and tuning options
+        private int _bufferSize = 8192;
+        private int _parallelism = 8;
+        private int _ringCapacity = 128 + (1 << 20); // Default ≈ 1 MB
 
-    public ParticleBuilder WithRingCapacity(int capacity)
-    {
-        _ringCapacity = capacity;
-        return this;
-    }
+        // UDP-specific options
+        private bool _allowBroadcast;
+        private bool _disableLoopback = true;
+        private IPAddress? _multicastGroup;
+        private int _multicastPort;
 
-    public ParticleBuilder WithTcpBacklog(int backlog)
-    {
-        _backlog = backlog > 0 ? backlog : 1024;
-        return this;
-    }
+        // Auto-reconnect settings
+        private bool _autoReconnect;
+        private TimeSpan _baseDelay = TimeSpan.FromSeconds(1);
+        private TimeSpan _maxDelay = TimeSpan.FromSeconds(30);
 
-    public ParticleBuilder AsServer(bool enable = true)
-    {
-        _isServer = enable;
-        return this;
-    }
+        // Event handlers (optional callbacks)
+        private Action<IParticle, ReadOnlyMemory<byte>>? _onReceived;
+        private Action<IParticle>? _onDisconnected;
+        private Action<IParticle>? _onConnected;
 
-    public ParticleBuilder AllowBroadcast(bool allow = true)
-    {
-        _allowBroadcast = allow;
-        return this;
-    }
+        #endregion
 
-    public ParticleBuilder WithMulticast(IPAddress group, int port, bool disableLoopback = true)
-    {
-        _mode = TransportMode.Udp;
-        _multicastGroup = group;
-        _multicastPort = port;
-        _disableLoopback = disableLoopback;
-        return this;
-    }
+        #region === Fluent Configuration ===
 
-    public ParticleBuilder OnReceived(Action<IParticle, ReadOnlyMemory<byte>> handler)
-    {
-        _onReceived = handler;
-        return this;
-    }
-
-    public ParticleBuilder OnConnected(Action<IParticle> handler)
-    {
-        _onConnected = handler;
-        return this;
-    }
-
-    public ParticleBuilder OnDisconnected(Action<IParticle> handler)
-    {
-        _onDisconnected = handler;
-        return this;
-    }
-
-    public ParticleBuilder WithAutoReconnect(double baseSeconds = 1, double maxSeconds = 30)
-    {
-        _autoReconnect = true;
-        _baseDelay = TimeSpan.FromSeconds(baseSeconds);
-        _maxDelay = TimeSpan.FromSeconds(maxSeconds);
-        return this;
-    }
-
-    #endregion
-
-    public IParticle Build()
-    {
-        // 🧩 Auto-reconnect wrapper
-        if (_autoReconnect)
+        /// <summary>
+        /// Sets the communication mode (e.g., TCP, UDP, IPC, Inproc).
+        /// </summary>
+        public ParticleBuilder UseMode(TransportMode mode)
         {
-            return new AutoReconnectWrapper(
-                factory: () => BuildCore(),
-                baseDelay: _baseDelay,
-                maxDelay: _maxDelay,
-                onConnected: _onConnected,
-                onDisconnected: _onDisconnected,
-                onReceived: _onReceived
-            );
+            _mode = mode;
+            return this;
         }
 
-        return BuildCore();
-    }
-
-    private IParticle BuildCore()
-    {
-        return _mode switch
+        /// <summary>
+        /// Sets the remote endpoint for TCP or UDP clients.
+        /// </summary>
+        public ParticleBuilder WithRemote(IPEndPoint endpoint)
         {
-            TransportMode.Tcp => BuildTcp(),
-            TransportMode.Ipc => BuildIpc(),
-            TransportMode.Inproc => BuildInproc(),
-            TransportMode.Udp => BuildUdp(),
-            _ => throw new InvalidOperationException($"Unsupported transport mode: {_mode}")
-        };
-    }
+            _remoteEndPoint = endpoint;
+            _acceptedSocket = null;
+            return this;
+        }
 
-    private IParticle BuildTcp()
-    {
-        // 🧱 TCP Server (Reactor)
-        if (_isServer)
+        /// <summary>
+        /// Sets the local endpoint (used for UDP binding or custom TCP ports).
+        /// </summary>
+        public ParticleBuilder WithLocal(IPEndPoint endpoint)
         {
-            var bind = _localEndPoint ?? new IPEndPoint(IPAddress.Any, 5000);
-            var reactor = new Reactor(bind, backlog: _backlog, _bufferSize, _parallelism)
+            _localEndPoint = endpoint;
+            return this;
+        }
+
+        /// <summary>
+        /// Creates a client from an already-accepted socket.
+        /// </summary>
+        /// <remarks>
+        /// Used internally by TCP servers to wrap accepted connections.
+        /// </remarks>
+        public ParticleBuilder FromAcceptedSocket(Socket socket)
+        {
+            _mode = TransportMode.Tcp;
+            _acceptedSocket = socket;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the shared channel name used for IPC or Inproc communication.
+        /// </summary>
+        /// <param name="name">The unique name of the shared channel.</param>
+        public ParticleBuilder WithChannel(string name)
+        {
+            _channelName = name;
+            return this;
+        }
+
+        /// <summary>
+        /// Adjusts the internal buffer size used for send and receive operations.
+        /// </summary>
+        public ParticleBuilder WithBufferSize(int bytes)
+        {
+            _bufferSize = bytes;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets how many threads can send data concurrently.
+        /// </summary>
+        public ParticleBuilder WithParallelism(int degree)
+        {
+            _parallelism = degree;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the maximum number of messages that can be queued in a ring buffer.
+        /// </summary>
+        public ParticleBuilder WithRingCapacity(int capacity)
+        {
+            _ringCapacity = capacity;
+            return this;
+        }
+
+        /// <summary>
+        /// Enables UDP broadcast packets (use with caution).
+        /// </summary>
+        public ParticleBuilder AllowBroadcast(bool allow = true)
+        {
+            _allowBroadcast = allow;
+            return this;
+        }
+
+        /// <summary>
+        /// Configures a UDP multicast group.
+        /// </summary>
+        public ParticleBuilder WithMulticast(IPAddress group, int port, bool disableLoopback = true)
+        {
+            _mode = TransportMode.Udp;
+            _multicastGroup = group;
+            _multicastPort = port;
+            _disableLoopback = disableLoopback;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets a handler that triggers whenever a message is received.
+        /// </summary>
+        public ParticleBuilder OnReceived(Action<IParticle, ReadOnlyMemory<byte>> handler)
+        {
+            _onReceived = handler;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets a handler that triggers when the connection is established.
+        /// </summary>
+        public ParticleBuilder OnConnected(Action<IParticle> handler)
+        {
+            _onConnected = handler;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets a handler that triggers when the connection is lost or closed.
+        /// </summary>
+        public ParticleBuilder OnDisconnected(Action<IParticle> handler)
+        {
+            _onDisconnected = handler;
+            return this;
+        }
+
+        /// <summary>
+        /// Enables automatic reconnection if the connection drops.
+        /// </summary>
+        /// <param name="baseSeconds">The initial retry delay in seconds.</param>
+        /// <param name="maxSeconds">The maximum retry delay in seconds.</param>
+        public ParticleBuilder WithAutoReconnect(double baseSeconds = 1, double maxSeconds = 30)
+        {
+            _autoReconnect = true;
+            _baseDelay = TimeSpan.FromSeconds(baseSeconds);
+            _maxDelay = TimeSpan.FromSeconds(maxSeconds);
+            return this;
+        }
+
+        #endregion
+
+        #region === Build ===
+
+        /// <summary>
+        /// Creates the <see cref="IParticle"/> instance using the current configuration.
+        /// </summary>
+        /// <remarks>
+        /// If auto-reconnect is enabled, the client will automatically reconnect using an internal wrapper.
+        /// </remarks>
+        public IParticle Build()
+        {
+            // 🔄 If auto-reconnect is enabled, wrap the connection in a retry layer
+            if (_autoReconnect)
             {
-                OnReceived = _onReceived,
-                OnConnected = _onConnected
+                return new AutoReconnectWrapper(
+                    factory: () => BuildCore(),
+                    baseDelay: _baseDelay,
+                    maxDelay: _maxDelay,
+                    onConnected: _onConnected,
+                    onDisconnected: _onDisconnected,
+                    onReceived: _onReceived
+                );
+            }
+
+            // Otherwise, build the transport directly
+            return BuildCore();
+        }
+
+        /// <summary>
+        /// Internal core builder that creates the correct transport type.
+        /// </summary>
+        private IParticle BuildCore()
+        {
+            return _mode switch
+            {
+                TransportMode.Tcp => BuildTcp(),
+                TransportMode.Ipc => BuildIpc(),
+                TransportMode.Inproc => BuildInproc(),
+                TransportMode.Udp => BuildUdp(),
+                _ => throw new InvalidOperationException($"Unsupported transport mode: {_mode}")
             };
-
-            reactor.Start();
-            return new TcpServerWrapper(reactor);
         }
 
-        // 🧱 TCP Client
-        if (_acceptedSocket != null)
+        /// <summary>
+        /// Builds a TCP client particle.
+        /// </summary>
+        private IParticle BuildTcp()
         {
-            var tcp = new Particle(_acceptedSocket, _bufferSize, _parallelism);
-            ApplyHandlers(tcp);
-            _onConnected?.Invoke(tcp);
-            return tcp;
+            if (_acceptedSocket != null)
+            {
+                // Wrap an existing accepted socket (for server use)
+                var tcp = new Particle(_acceptedSocket, _bufferSize, _parallelism);
+                ApplyHandlers(tcp);
+                _onConnected?.Invoke(tcp);
+                return tcp;
+            }
+
+            if (_remoteEndPoint == null)
+                throw new InvalidOperationException("TCP requires WithRemote().");
+
+            var client = new Particle(_remoteEndPoint, _bufferSize, _parallelism);
+            ApplyHandlers(client);
+            return client;
         }
 
-        if (_remoteEndPoint == null)
-            throw new InvalidOperationException("TCP requires WithRemote() or AsServer(true).");
-
-        var client = new Particle(_remoteEndPoint, _bufferSize, _parallelism);
-        ApplyHandlers(client);
-        return client;
-    }
-
-    private IParticle BuildIpc()
-    {
-        if (string.IsNullOrWhiteSpace(_channelName))
-            throw new InvalidOperationException("IPC mode requires WithChannel(name).");
-
-        int ringBytes = _ringCapacity <= 0 ? (128 + (1 << 20)) : _ringCapacity;
-
-        if (_isServer)
+        /// <summary>
+        /// Builds an IPC (shared-memory) client particle.
+        /// </summary>
+        private IParticle BuildIpc()
         {
-            var server = new MappedReactor(_channelName, global: false, ringBytes: ringBytes);
-            if (_onReceived != null) server.OnReceived = _onReceived;
-            if (_onConnected != null) server.OnConnected = id => _onConnected(new IpcClientProxy(id, server));
-            if (_onDisconnected != null) server.OnClientDisconnected = id => _onDisconnected(new IpcClientProxy(id, server));
-            server.Start();
-            return new IpcServerWrapper(server);
+            if (string.IsNullOrWhiteSpace(_channelName))
+                throw new InvalidOperationException("IPC mode requires WithChannel(name).");
+
+            int ringBytes = _ringCapacity <= 0 ? (128 + (1 << 20)) : _ringCapacity;
+
+            // Each IPC client gets a unique 64-bit ID so the server can identify it
+            var rnd = new Random();
+            var buf = new byte[8];
+            rnd.NextBytes(buf);
+            ulong id = BitConverter.ToUInt64(buf, 0);
+
+            var client = new MappedParticle(_channelName, id, global: false, ringBytes: ringBytes);
+            ApplyHandlers(client);
+            client.Start();
+            return client;
         }
 
-        var rnd = new Random();
-        var buf = new byte[8];
-        rnd.NextBytes(buf);
-        ulong id = BitConverter.ToUInt64(buf, 0);
-        var client = new MappedParticle(_channelName, id, global: false, ringBytes: ringBytes);
-        ApplyHandlers(client);
-        client.Start();
-        return client;
-    }
-
-    private IParticle BuildInproc()
-    {
-        if (_channelName == null)
-            throw new InvalidOperationException("Inproc mode requires WithChannel(name).");
-
-        if (_isServer)
+        /// <summary>
+        /// Builds an Inproc (same-process) client particle.
+        /// </summary>
+        private IParticle BuildInproc()
         {
-            var server = new InprocReactor(_channelName, _bufferSize, _ringCapacity, _parallelism);
+            if (string.IsNullOrWhiteSpace(_channelName))
+                throw new InvalidOperationException("Inproc mode requires WithChannel(name).");
 
-            if (_onReceived != null) server.OnReceived = _onReceived;
-            if (_onConnected != null) server.ClientConnected = _onConnected;
-            if (_onDisconnected != null) server.ClientDisconnected = _onDisconnected;
-
-            server.Start();
-            return new InprocServerWrapper(server);
+            var client = new InprocParticle(_channelName, isServer: false, _ringCapacity);
+            ApplyHandlers(client);
+            client.Start();
+            return client;
         }
 
-        var client = new InprocParticle(_channelName, isServer: false, _bufferSize, _ringCapacity, _parallelism);
-        ApplyHandlers(client);
-        client.Start();
-        return client;
-    }
-
-    private IParticle BuildUdp()
-    {
-        if (_multicastGroup != null)
+        /// <summary>
+        /// Builds a UDP particle for unicast or multicast communication.
+        /// </summary>
+        private IParticle BuildUdp()
         {
-            var port = _multicastPort > 0 ? _multicastPort : 0;
-            var local = new IPEndPoint(IPAddress.Any, port);
-            var remote = new IPEndPoint(_multicastGroup, port);
+            // Multicast mode
+            if (_multicastGroup != null)
+            {
+                var port = _multicastPort > 0 ? _multicastPort : 0;
+                var local = new IPEndPoint(IPAddress.Any, port);
+                var remote = new IPEndPoint(_multicastGroup, port);
 
-            var udp = new UdpParticle(local, remote, _multicastGroup, _disableLoopback, _allowBroadcast);
-            ApplyHandlers(udp);
-            return udp;
+                var udp = new UdpParticle(local, remote, _multicastGroup, _disableLoopback, _allowBroadcast);
+                ApplyHandlers(udp);
+                return udp;
+            }
+
+            // Standard unicast UDP
+            var localEp = _localEndPoint ?? new IPEndPoint(IPAddress.Any, 0);
+            var remoteEp = _remoteEndPoint ?? new IPEndPoint(IPAddress.Loopback, 0);
+
+            var p = new UdpParticle(localEp, remoteEp, allowBroadcast: _allowBroadcast);
+            ApplyHandlers(p);
+            return p;
         }
 
-        var localEp = _localEndPoint ?? new IPEndPoint(IPAddress.Any, 0);
-        var remoteEp = _remoteEndPoint ?? new IPEndPoint(IPAddress.Loopback, 0);
+        /// <summary>
+        /// Applies event handlers to a particle instance (if provided).
+        /// </summary>
+        private void ApplyHandlers(IParticle p)
+        {
+            if (_onReceived != null) p.OnReceived = _onReceived;
+            if (_onDisconnected != null) p.OnDisconnected = _onDisconnected;
+            if (_onConnected != null) p.OnConnected = _onConnected;
+        }
 
-        var p = new UdpParticle(localEp, remoteEp, allowBroadcast: _allowBroadcast);
-        ApplyHandlers(p);
-        return p;
-    }
-
-    private void ApplyHandlers(IParticle p)
-    {
-        if (_onReceived != null) p.OnReceived = _onReceived;
-        if (_onDisconnected != null) p.OnDisconnected = _onDisconnected;
-        if (_onConnected != null) p.OnConnected = _onConnected;
+        #endregion
     }
 }

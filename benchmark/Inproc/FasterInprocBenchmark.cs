@@ -13,8 +13,8 @@ using System.Threading.Tasks;
 [IterationCount(10)]
 public class FasterInprocBenchmark
 {
-    private IParticle _hub = null!;
-    private InprocParticle _client = null!;
+    private IReactor _server = null!;
+    private IParticle _client = null!;
     private int _received;
     private TaskCompletionSource<bool> _tcs;
     private readonly byte[] _payload = Encoding.UTF8.GetBytes("hello world 1234567890");
@@ -22,26 +22,26 @@ public class FasterInprocBenchmark
     [GlobalSetup]
     public void Setup()
     {
-        _hub = new ParticleBuilder()
+        _server = new ReactorBuilder()
             .UseMode(TransportMode.Inproc)
-            .WithChannel("bench", isServer: true)
+            .WithChannel("bench")
             .OnReceived((particle, data) =>
             {
                 particle.Send(data.Span);
             })
             .Build();
 
-        _client = new InprocParticle("bench", isServer: false);
-        _client.OnReceived = (_, data) =>
-        {
-            Interlocked.Increment(ref _received);
-            if (_received == 10000)
+        _client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel("bench")
+            .OnReceived((_, data) =>
             {
-                _tcs.SetResult(true);
-            }
-        };
-
-        _client.Start();
+                Interlocked.Increment(ref _received);
+                if (_received == 10000)
+                {
+                    _tcs.SetResult(true);
+                }
+            }).Build();
 
         Task.Delay(100).Wait(); // wait for setup
     }
@@ -49,7 +49,7 @@ public class FasterInprocBenchmark
     [GlobalCleanup]
     public void Cleanup()
     {
-        _hub.Dispose();
+        _server.Dispose();
         _client.Dispose();
     }
 

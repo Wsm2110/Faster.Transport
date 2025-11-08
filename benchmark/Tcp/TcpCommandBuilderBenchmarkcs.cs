@@ -45,26 +45,23 @@ namespace Faster.Transport.Benchmarks
             var endpoint = new IPEndPoint(IPAddress.Loopback, 5555);
 
             // --- Server ---
-            var server = new ParticleBuilder()
-      .UseMode(TransportMode.Tcp)
-      .AsServer(true)
-      .WithLocal(new IPEndPoint(IPAddress.Any, 5555))
-      .WithBufferSize(8192)
-      .WithParallelism(16)
-      .OnConnected(p => Console.WriteLine("Client connected"))
-      .OnReceived((p, data) => Console.WriteLine($"Received {data.Length} bytes"))
-      .Build();
-
+            var server = new ReactorBuilder()
+                            .UseMode(TransportMode.Tcp)
+                            .WithBufferSize(8192)
+                            .WithParallelism(16)
+                            .OnConnected(p => Console.WriteLine("Client connected"))
+                            .OnReceived((p, data) => Console.WriteLine($"Received {data.Length} bytes"))
+                            .Build();
 
             // --- Client ---
             _client = new ParticleBuilder()
-                .UseMode(TransportMode.Tcp)
-                .WithRemote(endpoint)
-                .OnReceived((_, data) =>
-                {
-                    _tcs?.TrySetResult(true);
-                })
-                .Build();
+                          .UseMode(TransportMode.Tcp)
+                          .WithRemote(endpoint)
+                          .OnReceived((_, data) =>
+                          {
+                              _tcs?.TrySetResult(true);
+                          })
+                          .Build();
 
             // Wait for connection establishment
             Thread.Sleep(200);

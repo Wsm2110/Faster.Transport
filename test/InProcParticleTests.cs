@@ -1,5 +1,7 @@
 ﻿using Faster.Transport;
 using Faster.Transport.Contracts;
+using System;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Faster.Transport.Unittests;
@@ -21,33 +23,28 @@ public class InprocParticleTests : IDisposable
     public async Task Basic_RoundTrip()
     {
         string name = Channel();
-
-        // Reactor (server)
-        var server = new ParticleBuilder()
-            .UseMode(TransportMode.Inproc)
-            .WithChannel(name, isServer: true)
-            .Build();
-
-        // Client
-        var client = new ParticleBuilder()
-            .UseMode(TransportMode.Inproc)
-            .WithChannel(name)
-            .Build();
-
         string? serverReceived = null;
         string? clientReceived = null;
 
-        server.OnReceived = (p, data) =>
-        {
-            serverReceived = Str(data);
-            p.Send(Utf8("pong"));
-        };
+        // 🧱 Build server with event handlers
+        var server = new ReactorBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .OnReceived((p, data) =>
+            {
+                serverReceived = Str(data);
+                p.Send(Utf8("pong"));
+            })
+            .Build();
 
-        client.OnReceived = (p, data) =>
-        {
-            clientReceived = Str(data);
-        };
+        // 🧱 Build client with event handler
+        var client = new ParticleBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .OnReceived((_, data) => clientReceived = Str(data))
+            .Build();
 
+        server.Start();
         await Task.Delay(100, _cts.Token);
         client.Send(Utf8("ping"));
         await Task.Delay(200, _cts.Token);
@@ -66,24 +63,23 @@ public class InprocParticleTests : IDisposable
     public async Task Large_Payload_Transferred()
     {
         string name = Channel();
+        byte[] sent = new byte[128 * 1024];
+        new Random(123).NextBytes(sent);
+        byte[]? received = null;
 
-        var server = new ParticleBuilder()
+        var server = new ReactorBuilder()
             .UseMode(TransportMode.Inproc)
-            .WithChannel(name, isServer: true)
+            .WithChannel(name)
+            .OnReceived((p, data) => p.Send(data.Span))
             .Build();
 
         var client = new ParticleBuilder()
             .UseMode(TransportMode.Inproc)
             .WithChannel(name)
+            .OnReceived((_, data) => received = data.ToArray())
             .Build();
 
-        byte[] sent = new byte[128 * 1024];
-        new Random(123).NextBytes(sent);
-        byte[]? received = null;
-
-        server.OnReceived = (p, data) => p.Send(data.Span);
-        client.OnReceived = (p, data) => received = data.ToArray();
-
+        server.Start();
         await Task.Delay(100, _cts.Token);
         client.Send(sent);
         await Task.Delay(200, _cts.Token);
@@ -102,10 +98,12 @@ public class InprocParticleTests : IDisposable
     public async Task Zero_Length_Ignored()
     {
         string name = Channel();
+        bool got = false;
 
-        var server = new ParticleBuilder()
+        var server = new ReactorBuilder()
             .UseMode(TransportMode.Inproc)
-            .WithChannel(name, isServer: true)
+            .WithChannel(name)
+            .OnReceived((_, _) => got = true)
             .Build();
 
         var client = new ParticleBuilder()
@@ -113,12 +111,7 @@ public class InprocParticleTests : IDisposable
             .WithChannel(name)
             .Build();
 
-        bool got = false;
-        server.OnReceived = (p, data) =>
-        {
-            got = true;
-        };
-
+        server.Start();
         await Task.Delay(100, _cts.Token);
         client.Send(ReadOnlySpan<byte>.Empty);
         await Task.Delay(100, _cts.Token);
@@ -136,10 +129,15 @@ public class InprocParticleTests : IDisposable
     public async Task Messages_Preserve_Order()
     {
         string name = Channel();
+        var received = new List<byte>();
 
-        var server = new ParticleBuilder()
+        var server = new ReactorBuilder()
             .UseMode(TransportMode.Inproc)
-            .WithChannel(name, isServer: true)
+            .WithChannel(name)
+            .OnReceived((_, data) =>
+            {
+                received.Add(data.Span[0]);
+            })
             .Build();
 
         var client = new ParticleBuilder()
@@ -147,20 +145,20 @@ public class InprocParticleTests : IDisposable
             .WithChannel(name)
             .Build();
 
-        var received = new List<int>();
-
-        server.OnReceived = (p, data) =>
-        {
-            var num = int.Parse(Str(data));
-            received.Add(num);
-        };
-
+        server.Start();
         await Task.Delay(100, _cts.Token);
-        for (int i = 0; i < 50; i++)
-            client.Send(Utf8(i.ToString()));
+
+        var test = new List<byte>();    
+        
+
+        for (byte i = 0; i < 50; i++)
+        {
+            test.Add(i);
+            client.Send(new[] { i });
+        }
 
         await Task.Delay(300, _cts.Token);
-        Assert.Equal(Enumerable.Range(0, 50), received);
+        Assert.Equal(test, received);
 
         server.Dispose();
         client.Dispose();
@@ -173,10 +171,12 @@ public class InprocParticleTests : IDisposable
     public async Task Concurrent_Sends_Are_Safe()
     {
         string name = Channel();
+        int count = 0;
 
-        var server = new ParticleBuilder()
+        var server = new ReactorBuilder()
             .UseMode(TransportMode.Inproc)
-            .WithChannel(name, isServer: true)
+            .WithChannel(name)
+            .OnReceived((_, _) => Interlocked.Increment(ref count))
             .Build();
 
         var client = new ParticleBuilder()
@@ -184,9 +184,7 @@ public class InprocParticleTests : IDisposable
             .WithChannel(name)
             .Build();
 
-        int count = 0;
-        server.OnReceived = (p, data) => Interlocked.Increment(ref count);
-
+        server.Start();
         await Task.Delay(100, _cts.Token);
 
         var tasks = Enumerable.Range(0, 4).Select(async _ =>
@@ -212,20 +210,20 @@ public class InprocParticleTests : IDisposable
     public async Task OnDisconnected_Fires()
     {
         string name = Channel();
+        var disconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var server = new ParticleBuilder()
+        var server = new ReactorBuilder()
             .UseMode(TransportMode.Inproc)
-            .WithChannel(name, isServer: true)
+            .WithChannel(name)
             .Build();
 
         var client = new ParticleBuilder()
             .UseMode(TransportMode.Inproc)
             .WithChannel(name)
+            .OnDisconnected(_ => disconnected.TrySetResult(true))
             .Build();
 
-        var disconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        client.OnDisconnected = _ => disconnected.TrySetResult(true);
-
+        server.Start();
         await Task.Delay(100, _cts.Token);
         client.Dispose();
 
@@ -242,22 +240,20 @@ public class InprocParticleTests : IDisposable
     public async Task OnConnected_Fires_For_Client()
     {
         string name = Channel();
+        var connected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var server = new ParticleBuilder()
+        var server = new ReactorBuilder()
             .UseMode(TransportMode.Inproc)
-            .WithChannel(name, isServer: true)
+            .WithChannel(name)
             .Build();
 
-        var connected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new ParticleBuilder()
             .UseMode(TransportMode.Inproc)
             .WithChannel(name)
-            .OnConnected(_ =>
-            {
-                connected.TrySetResult(true);
-            })
+            .OnConnected(_ => connected.TrySetResult(true))
             .Build();
 
+        server.Start();
         var ok = await connected.Task.WaitAsync(_cts.Token);
         Assert.True(ok);
 
@@ -273,9 +269,9 @@ public class InprocParticleTests : IDisposable
     {
         string name = Channel();
 
-        var server = new ParticleBuilder()
+        var server = new ReactorBuilder()
             .UseMode(TransportMode.Inproc)
-            .WithChannel(name, isServer: true)
+            .WithChannel(name)
             .Build();
 
         var client = new ParticleBuilder()
@@ -283,9 +279,10 @@ public class InprocParticleTests : IDisposable
             .WithChannel(name)
             .Build();
 
+        server.Start();
         client.Dispose();
-        Assert.Throws<ObjectDisposedException>(() => client.Send(Utf8("x")));
 
+        Assert.Throws<ObjectDisposedException>(() => client.Send(Utf8("x")));
         server.Dispose();
     }
 
@@ -296,14 +293,13 @@ public class InprocParticleTests : IDisposable
     public async Task Multiple_Clients_Work()
     {
         string name = Channel();
-
-        var server = new ParticleBuilder()
-            .UseMode(TransportMode.Inproc)
-            .WithChannel(name, isServer: true)
-            .Build();
-
         int received = 0;
-        server.OnReceived = (p, data) => Interlocked.Increment(ref received);
+
+        var server = new ReactorBuilder()
+            .UseMode(TransportMode.Inproc)
+            .WithChannel(name)
+            .OnReceived((_, _) => Interlocked.Increment(ref received))
+            .Build();
 
         var clients = Enumerable.Range(0, 3)
             .Select(_ => new ParticleBuilder()
@@ -312,7 +308,9 @@ public class InprocParticleTests : IDisposable
                 .Build())
             .ToList();
 
+        server.Start();
         await Task.Delay(100, _cts.Token);
+
         foreach (var c in clients)
             c.Send(Utf8("hello"));
 
